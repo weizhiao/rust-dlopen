@@ -115,6 +115,7 @@ def object_event_hook(event: NewObjFileEvent) -> object:
         event (NewObjFileEvent): GDB event triggered by loading a new object file.
     """
     global BRK_INIT
+    execute("set language c")
     debug = parse_and_eval("(struct r_debug *) &_r_debug")
     r_brk = debug.dereference()["r_brk"]
 
