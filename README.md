@@ -23,18 +23,6 @@ $ cargo build -r -p dlopen-rs --example preload
 $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examples/preload
 ```
 
-
-## Troubleshooting: Symbols Not Loaded in GDB
-If you're using `dlopen-rs` to load dynamic libraries **without** overriding `LD_PRELOAD`, `gdb` may fail to resolve symbols.  
-For more details, see [Issue #10](https://github.com/weizhiao/rust-dlopen/issues/10).
-If you are experiencing this issue, try starting `gdb` with the script `scripts/reload_sos_on_r_brk.py`:
-
-```sh
-gdb -x scripts/reload_sos_on_r_brk.py /path/to/binary
-```
-You may also need to install `elftools` via `pip`.
-
-
 ## Advantages
 1. Provides support for loading ELF dynamic libraries to #![no_std] targets.
 2. Enables easy runtime replacement of symbols in shared libraries with custom implementations.
@@ -147,3 +135,6 @@ Rust 1.85 or higher.
 
 ## Supplement
 If you encounter any issues during use, feel free to raise them on GitHub. We warmly welcome everyone to contribute code to help improve the functionality of dlopen-rs. 😊
+
+## Troubleshooting GDB
+[See the dedicated page.](TroubleshootingGdb.md)

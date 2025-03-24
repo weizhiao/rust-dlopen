@@ -86,6 +86,7 @@ class BrkReloadAllSharedLib(Breakpoint):
         Returns:
             bool: Always returns `False` to continue execution after the breakpoint.
         """
+        execute("set language c")
         link = self.debug.dereference()["r_map"]
 
         # Traverse the linked list of loaded shared objects
@@ -102,6 +103,7 @@ class BrkReloadAllSharedLib(Breakpoint):
             ensure_shared_library(lib_path, l_addr)
             link = link.dereference()["l_next"]
 
+        execute("set language auto")
         return False
 
 
@@ -123,6 +125,7 @@ def object_event_hook(event: NewObjFileEvent) -> object:
     if not BRK_INIT and r_brk != 0:
         BrkReloadAllSharedLib(debug, r_brk)
         BRK_INIT = True
+    execute("set language auto")
 
 
 # Register the event hook to track shared library loading.
