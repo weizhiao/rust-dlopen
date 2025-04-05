@@ -30,6 +30,9 @@ fn main() {
     let backtrace = unsafe { libexample2.get::<fn()>("backtrace").unwrap() };
     backtrace();
 
+	let panic = unsafe { libexample2.get::<fn()>("panic").unwrap() };
+	panic();
+
     let dl_info = ElfLibrary::dladdr(backtrace.into_raw() as usize).unwrap();
     println!("{:?}", dl_info);
 

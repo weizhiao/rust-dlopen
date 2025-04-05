@@ -287,7 +287,7 @@ where
             &|name| builtin::BUILTIN.get(name).copied(),
             deal_unknown,
             if is_lazy {
-                Some(Box::new(|name| lazy_scope(name)))
+                Some(lazy_scope.clone())
             } else {
                 None
             },

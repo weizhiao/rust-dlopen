@@ -315,7 +315,7 @@ impl ElfLibrary {
                 deps.iter(),
                 find,
                 deal_unknown,
-                Some(Box::new(|name| lazy_scope(name))),
+                Some(lazy_scope),
             )?)
         };
         if !self.flags.contains(OpenFlags::CUSTOM_NOT_REGISTER) {

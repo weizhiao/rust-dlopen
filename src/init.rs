@@ -51,7 +51,7 @@ fn get_debug_struct() -> &'static mut GDBDebug {
 #[cfg(target_env = "musl")]
 #[inline]
 fn get_debug_struct() -> &'static mut GDBDebug {
-    extern "C" {
+    unsafe extern "C" {
         static mut _dl_debug_addr: GDBDebug;
     }
     unsafe { &mut *addr_of_mut!(_dl_debug_addr) }
