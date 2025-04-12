@@ -121,15 +121,13 @@ pub(crate) fn deal_unknown<'scope>(
                 if dynsym.is_local() {
                     unsafe { ptr.write(cast(lib)) };
                     return Ok(());
-                } else {
-                    if let Some(id) = deps.find_map(|lib| unsafe {
-                        lib.symtab()
-                            .lookup_filter(&syminfo)
-                            .map(|_| cast(lib.core_component_ref()))
-                    }) {
-                        unsafe { ptr.write(id) };
-                        return Ok(());
-                    };
+                } else if let Some(id) = deps.find_map(|lib| unsafe {
+                    lib.symtab()
+                        .lookup_filter(&syminfo)
+                        .map(|_| cast(lib.core_component_ref()))
+                }) {
+                    unsafe { ptr.write(id) };
+                    return Ok(());
                 };
             } else {
                 unsafe { ptr.write(cast(lib)) };
@@ -236,7 +234,7 @@ impl ElfLibrary {
     /// ```no_run
     /// # use dlopen_rs::{ElfLibrary, OpenFlags};
     /// let lib = ElfLibrary::from_file("/path/to/awesome.module", OpenFlags::RTLD_LOCAL)
-    ///		.unwrap();
+    ///     .unwrap();
     /// ```
     ///
     #[cfg(feature = "std")]
@@ -347,8 +345,8 @@ impl ElfLibrary {
     /// let libc = ElfLibrary::load_existing("libc").unwrap();
     /// let libgcc = ElfLibrary::load_existing("libgcc").unwrap();
     /// let lib = ElfLibrary::from_file("/path/to/awesome.module", OpenFlags::RTLD_LOCAL)
-    /// 	.unwrap()
-    /// 	.relocate(&[libgcc, libc]);
+    ///     .unwrap()
+    ///     .relocate(&[libgcc, libc]);
     /// ```
     #[inline]
     pub fn relocate(self, libs: impl AsRef<[Dylib]>) -> Result<Dylib> {
@@ -369,15 +367,15 @@ impl ElfLibrary {
     /// let libc = ElfLibrary::load_existing("libc").unwrap();
     /// let libgcc = ElfLibrary::load_existing("libgcc").unwrap();
     /// let lib = ElfLibrary::from_file("/path/to/awesome.module", OpenFlags::RTLD_LOCAL)
-    /// 	.unwrap()
-    /// 	.relocate_with(&[libc, libgcc], |name| {
+    ///     .unwrap()
+    ///     .relocate_with(&[libc, libgcc], |name| {
     ///         if name == "malloc" {
-    ///	             return Some(mymalloc as _);
+    ///              return Some(mymalloc as _);
     ///         } else {
-    ///	             return None;
+    ///              return None;
     ///         }
     ///     })
-    ///		.unwrap();
+    ///     .unwrap();
     /// ```
     /// # Note
     /// It will use function closure to relocate current lib firstly.

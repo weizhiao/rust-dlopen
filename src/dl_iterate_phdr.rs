@@ -1,7 +1,7 @@
-use crate::{register::MANAGER, ElfLibrary, Error, Result};
+use crate::{ElfLibrary, Error, Result, register::MANAGER};
 use alloc::boxed::Box;
 use core::{
-    ffi::{c_char, c_int, c_ulonglong, c_void, CStr},
+    ffi::{CStr, c_char, c_int, c_ulonglong, c_void},
     ptr::null_mut,
 };
 use elf_loader::arch::ElfPhdr;
@@ -85,8 +85,9 @@ impl ElfLibrary {
 pub(crate) type CallBack =
     unsafe extern "C" fn(info: *mut CDlPhdrInfo, size: usize, data: *mut c_void) -> c_int;
 
-// It is the same as `dl_iterate_phdr`.
-pub extern "C" fn dl_iterate_phdr(callback: Option<CallBack>, data: *mut c_void) -> c_int {
+/// # Safety
+/// It is the same as `dl_iterate_phdr`.
+pub unsafe extern "C" fn dl_iterate_phdr(callback: Option<CallBack>, data: *mut c_void) -> c_int {
     let f = |info: &DlPhdrInfo| {
         if let Some(callback) = callback {
             let mut c_info = CDlPhdrInfo {

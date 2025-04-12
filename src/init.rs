@@ -207,7 +207,7 @@ fn init_argv() {
 
 unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut c_void) -> c_int {
     let info = unsafe { &*info };
-    let base = info.dlpi_addr as usize;
+    let base = info.dlpi_addr;
     let phdrs = unsafe { core::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
     let dynamic_ptr = phdrs
         .iter()
@@ -227,7 +227,7 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut 
             CStr::from_ptr(info.dlpi_name).to_owned(),
             segments,
             dynamic_ptr,
-            Some(core::mem::transmute(phdrs)),
+            Some(phdrs),
         )
     }
     .unwrap() else {
@@ -238,7 +238,7 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut 
     let start = lib.base();
     let end = start + lib.map_len();
     let shortname = lib.shortname();
-    let name = if shortname == "" {
+    let name = if shortname.is_empty() {
         unsafe {
             (*addr_of!(PROGRAM_NAME))
                 .as_ref()

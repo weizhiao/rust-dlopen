@@ -42,14 +42,8 @@ impl Drop for Dylib {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct DylibState(u8);
-
-impl Default for DylibState {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 impl DylibState {
     const USED_MASK: u8 = 0b10000000;
@@ -185,7 +179,7 @@ pub(crate) fn register(
         },
     );
     if flags.contains(OpenFlags::RTLD_GLOBAL) {
-        manager.global.insert(shortname.to_owned(), lib);
+        manager.global.insert(shortname, lib);
     }
 }
 

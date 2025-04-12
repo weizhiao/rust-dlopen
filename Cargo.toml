@@ -20,7 +20,7 @@ resolver = "2"
 libc = { version = "0.2.169", default-features = false }
 
 [dependencies.spin]
-version = "0.9.8"
+version = "0.10.0"
 default-features = false
 features = ["rwlock", "lazy", "mutex", "spin_mutex"]
 
@@ -31,19 +31,19 @@ features = ["fde-custom", "unwinder"]
 optional = true
 
 [dependencies.gimli]
-version = "0.30"
+version = "0.31"
 default-features = false
 features = ["read-core"]
 optional = true
 
 [dependencies.hashbrown]
-version = '0.14'
+version = '0.15.2'
 default-features = false
-features = ['ahash', 'inline-more']
+features = ['inline-more']
 optional = true
 
 [dependencies.indexmap]
-version = '2.7.0'
+version = '2.9.0'
 
 [dependencies.libc]
 workspace = true
@@ -55,12 +55,12 @@ default-features = false
 features = ['macros']
 
 [dependencies.elf_loader]
-version = "=0.10.0"
+version = "=0.10.1"
 default-features = false
 features = ["use-libc", "log"]
 
 [dependencies.dynamic-loader-cache]
-version = "0.2.1"
+version = "0.2.3"
 optional = true
 
 [dependencies.thread-register]

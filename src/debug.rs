@@ -68,9 +68,10 @@ impl DebugInfo {
     pub(crate) unsafe fn new(base: usize, name: *const c_char, dynamic: usize) -> DebugInfo {
         let mut custom_debug = DEBUG.lock().unwrap();
         let tail = custom_debug.tail;
-        if custom_debug.debug.is_null() {
-            panic!("Please call init function first");
-        }
+        assert!(
+            !custom_debug.debug.is_null(),
+            "Please call init function first"
+        );
         let debug = unsafe { &mut *custom_debug.debug };
         let link_map = Box::leak(Box::new(LinkMap {
             l_addr: base as _,

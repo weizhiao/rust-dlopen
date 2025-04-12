@@ -40,9 +40,10 @@ impl ElfTls {
         }
 
         let mut key = MaybeUninit::uninit();
-        if unsafe { pthread_key_create(key.as_mut_ptr(), Some(dtor)) } != 0 {
-            panic!("can not create tls");
-        }
+        assert!(
+            (unsafe { pthread_key_create(key.as_mut_ptr(), Some(dtor)) } == 0),
+            "can not create tls"
+        );
         let align = phdr.p_align as usize;
         let mut size = (size_of::<Layout>() + align - 1) & !(align - 1);
         // 前面用来保存layout

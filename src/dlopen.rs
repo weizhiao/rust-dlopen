@@ -9,6 +9,7 @@ use alloc::{
     format,
     string::{String, ToString},
     sync::Arc,
+    vec,
     vec::Vec,
 };
 use core::ffi::{c_char, c_int, c_void};
@@ -120,14 +121,14 @@ where
     B: Builder,
     M: Mmap,
 {
-    let shortname = path.split('/').last().unwrap();
+    let shortname = path.split('/').next_back().unwrap();
     log::info!("dlopen: Try to open [{}] with [{:?}] ", path, flags);
     let mut lock = MANAGER.write();
     // 新加载的动态库
     let mut new_libs = Vec::new();
     let core = if flags.contains(OpenFlags::CUSTOM_NOT_REGISTER) {
         let lib = f()?;
-        let core = lib.dylib.core_component().clone();
+        let core = lib.dylib.core_component();
         new_libs.push(Some(lib));
         unsafe { RelocatedDylib::from_core_component(core) }
     } else {
@@ -143,7 +144,7 @@ where
             lib.relocated_dylib()
         } else {
             let lib = f()?;
-            let core = lib.dylib.core_component().clone();
+            let core = lib.dylib.core_component();
             new_libs.push(Some(lib));
             unsafe { RelocatedDylib::from_core_component(core) }
         }
@@ -209,7 +210,7 @@ where
 
             find_library(rpath, lib_name, |path| {
                 let new_lib = ElfLibrary::from_builder::<B, M>(path.as_str(), flags)?;
-                let inner = new_lib.dylib.core_component().clone();
+                let inner = new_lib.dylib.core_component();
                 register(
                     unsafe { RelocatedDylib::from_core_component(inner.clone()) },
                     flags,
@@ -302,19 +303,20 @@ where
 static LD_LIBRARY_PATH: Lazy<Box<[ElfPath]>> = Lazy::new(|| {
     #[cfg(feature = "std")]
     {
-        let library_path = std::env::var("LD_LIBRARY_PATH").unwrap_or(String::new());
+        let library_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
         deal_path(&library_path)
     }
     #[cfg(not(feature = "std"))]
     Box::new([])
 });
 static DEFAULT_PATH: spin::Lazy<Box<[ElfPath]>> = Lazy::new(|| unsafe {
-    let mut v = Vec::new();
-    v.push(ElfPath::from_str("/lib").unwrap_unchecked());
-    v.push(ElfPath::from_str("/usr/lib").unwrap_unchecked());
+    let v = vec![
+        ElfPath::from_str("/usr/lib").unwrap_unchecked(),
+        ElfPath::from_str("/usr/lib").unwrap_unchecked(),
+    ];
     v.into_boxed_slice()
 });
-static LD_CACHE: Lazy<Box<[ElfPath]>> = Lazy::new(|| build_ld_cache());
+static LD_CACHE: Lazy<Box<[ElfPath]>> = Lazy::new(build_ld_cache);
 
 #[inline]
 fn fixup_rpath(lib_path: &str, rpath: &str) -> Box<[ElfPath]> {
@@ -344,7 +346,7 @@ fn deal_path(s: &str) -> Box<[ElfPath]> {
 
 #[inline]
 fn find_library(
-    cur_rpath: &Box<[ElfPath]>,
+    cur_rpath: &[ElfPath],
     lib_name: &str,
     mut f: impl FnMut(&ElfPath) -> Result<()>,
 ) -> Result<()> {
@@ -417,6 +419,7 @@ mod imp {
 use imp::build_ld_cache;
 
 #[allow(unused_variables)]
+/// # Safety
 /// It is the same as `dlopen`.
 pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const c_void {
     let mut lib = if filename.is_null() {

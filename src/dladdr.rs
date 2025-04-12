@@ -94,7 +94,9 @@ impl ElfLibrary {
                     && sym.is_ok_type()
                     && (start..end).contains(&addr)
                 {
-                    dl_info.sname = Some(unsafe { core::mem::transmute(syminfo.cname().unwrap()) });
+                    dl_info.sname = Some(unsafe {
+                        core::mem::transmute::<&CStr, &CStr>(syminfo.cname().unwrap())
+                    });
                     dl_info.saddr = start;
                 }
             }
@@ -103,6 +105,7 @@ impl ElfLibrary {
     }
 }
 
+/// # Safety
 /// It is the same as `dladdr`.
 pub unsafe extern "C" fn dladdr(addr: *const c_void, info: *mut CDlinfo) -> c_int {
     if let Some(dl_info) = ElfLibrary::dladdr(addr as usize) {

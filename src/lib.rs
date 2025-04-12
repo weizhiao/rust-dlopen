@@ -20,12 +20,26 @@
 //!     let libexample = ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL | OpenFlags::RTLD_LAZY).unwrap();
 //!
 //!     let add = unsafe {
-//! 	    libexample.get::<fn(i32, i32) -> i32>("add").unwrap()
+//!         libexample.get::<fn(i32, i32) -> i32>("add").unwrap()
 //!     };
 //!     println!("{}", add(1,1));
 //! }
 //! ```
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::type_complexity)]
+#![warn(
+    clippy::unnecessary_lazy_evaluations,
+    clippy::collapsible_if,
+    clippy::explicit_iter_loop,
+    clippy::manual_assert,
+    clippy::needless_question_mark,
+    clippy::needless_return,
+    clippy::needless_update,
+    clippy::redundant_clone,
+    clippy::redundant_else,
+    clippy::redundant_static_lifetimes
+)]
+
 extern crate alloc;
 
 pub mod abi;

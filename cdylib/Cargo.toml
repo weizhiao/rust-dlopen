@@ -9,7 +9,7 @@ default-features = false
 features = ["tls", "mmap", "debug", "libgcc"]
 
 [dependencies]
-ctor = "0.2.9"
+ctor = "0.4.1"
 env_logger = "0.11.6"
 
 [lib]
