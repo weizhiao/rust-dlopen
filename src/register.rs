@@ -1,10 +1,10 @@
-use crate::{Dylib, OpenFlags};
+use crate::{ElfLibrary, OpenFlags};
 use alloc::{borrow::ToOwned, boxed::Box, string::String, sync::Arc};
 use elf_loader::RelocatedDylib;
 use indexmap::IndexMap;
 use spin::{Lazy, RwLock};
 
-impl Drop for Dylib {
+impl Drop for ElfLibrary {
     fn drop(&mut self) {
         if self.flags.contains(OpenFlags::RTLD_NODELETE)
             | self.flags.contains(OpenFlags::CUSTOM_NOT_REGISTER)
@@ -104,9 +104,9 @@ unsafe impl Sync for GlobalDylib {}
 
 impl GlobalDylib {
     #[inline]
-    pub(crate) fn get_dylib(&self) -> Dylib {
+    pub(crate) fn get_dylib(&self) -> ElfLibrary {
         debug_assert!(self.deps.is_some());
-        Dylib {
+        ElfLibrary {
             inner: self.inner.clone(),
             flags: self.flags,
             deps: self.deps.clone(),
@@ -186,21 +186,16 @@ pub(crate) fn register(
 #[cfg(feature = "std")]
 pub(crate) fn global_find(name: &str) -> Option<*const ()> {
     log::debug!("Lazy Binding: [{}]", name);
-    crate::loader::builtin::BUILTIN
-        .get(name)
-        .copied()
-        .or_else(|| {
-            MANAGER.read().global.values().find_map(|lib| unsafe {
-                lib.get::<()>(name).map(|sym| {
-                    log::trace!(
-                        "Lazy Binding: find symbol [{}] from [{}] in global scope ",
-                        name,
-                        lib.name()
-                    );
-                    let val = sym.into_raw();
-                    assert!(lib.base() != val as usize);
-                    val
-                })
-            })
+    MANAGER.read().global.values().find_map(|lib| unsafe {
+        lib.get::<()>(name).map(|sym| {
+            log::trace!(
+                "Lazy Binding: find symbol [{}] from [{}] in global scope ",
+                name,
+                lib.name()
+            );
+            let val = sym.into_raw();
+            assert!(lib.base() != val as usize);
+            val
         })
+    })
 }

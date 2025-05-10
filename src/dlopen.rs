@@ -1,6 +1,6 @@
 use crate::{
     OpenFlags, Result, find_lib_error,
-    loader::{Builder, Dylib, ElfLibrary, FileBuilder, builtin, create_lazy_scope, deal_unknown},
+    loader::{Builder, ElfLibrary, FileBuilder, create_lazy_scope, deal_unknown},
     register::{DylibState, MANAGER, register},
 };
 use alloc::{
@@ -14,7 +14,7 @@ use alloc::{
 };
 use core::ffi::{c_char, c_int, c_void};
 use elf_loader::{
-    RelocatedDylib,
+    ElfDylib, RelocatedDylib,
     mmap::{Mmap, MmapImpl},
 };
 use spin::Lazy;
@@ -56,7 +56,7 @@ impl ElfLibrary {
     /// ```
     #[cfg(feature = "std")]
     #[inline]
-    pub fn dlopen(path: impl AsRef<std::ffi::OsStr>, flags: OpenFlags) -> Result<Dylib> {
+    pub fn dlopen(path: impl AsRef<std::ffi::OsStr>, flags: OpenFlags) -> Result<ElfLibrary> {
         dlopen_impl::<FileBuilder, MmapImpl>(path.as_ref().to_str().unwrap(), flags, || {
             ElfLibrary::from_file(path.as_ref(), flags)
         })
@@ -67,7 +67,7 @@ impl ElfLibrary {
         path: &str,
         bytes: Option<&[u8]>,
         flags: OpenFlags,
-    ) -> Result<Dylib>
+    ) -> Result<ElfLibrary>
     where
         B: Builder,
         M: Mmap,
@@ -88,7 +88,7 @@ impl ElfLibrary {
         bytes: &[u8],
         path: impl AsRef<str>,
         flags: OpenFlags,
-    ) -> Result<Dylib> {
+    ) -> Result<ElfLibrary> {
         dlopen_impl::<FileBuilder, MmapImpl>(path.as_ref(), flags, || {
             ElfLibrary::from_binary(bytes, path.as_ref(), flags)
         })
@@ -115,8 +115,8 @@ impl Drop for Recycler {
 fn dlopen_impl<B, M>(
     path: &str,
     flags: OpenFlags,
-    f: impl Fn() -> Result<ElfLibrary>,
-) -> Result<Dylib>
+    f: impl Fn() -> Result<ElfDylib>,
+) -> Result<ElfLibrary>
 where
     B: Builder,
     M: Mmap,
@@ -128,7 +128,7 @@ where
     let mut new_libs = Vec::new();
     let core = if flags.contains(OpenFlags::CUSTOM_NOT_REGISTER) {
         let lib = f()?;
-        let core = lib.dylib.core_component();
+        let core = lib.core_component();
         new_libs.push(Some(lib));
         unsafe { RelocatedDylib::from_core_component(core) }
     } else {
@@ -144,7 +144,7 @@ where
             lib.relocated_dylib()
         } else {
             let lib = f()?;
-            let core = lib.dylib.core_component();
+            let core = lib.core_component();
             new_libs.push(Some(lib));
             unsafe { RelocatedDylib::from_core_component(core) }
         }
@@ -199,7 +199,6 @@ where
                 let parent_lib = new_libs[cur_newlib_pos].as_ref().unwrap();
                 cur_rpath = Some(
                     parent_lib
-                        .dylib
                         .rpath()
                         .map(|rpath| fixup_rpath(parent_lib.name(), rpath))
                         .unwrap_or(Box::new([])),
@@ -210,7 +209,7 @@ where
 
             find_library(rpath, lib_name, |path| {
                 let new_lib = ElfLibrary::from_builder::<B, M>(path.as_str(), flags)?;
-                let inner = new_lib.dylib.core_component();
+                let inner = new_lib.core_component();
                 register(
                     unsafe { RelocatedDylib::from_core_component(inner.clone()) },
                     flags,
@@ -263,7 +262,7 @@ where
 
     let deps = Arc::new(dep_libs.into_boxed_slice());
     let core = deps[0].clone();
-    let res = Dylib {
+    let res = ElfLibrary {
         inner: core.clone(),
         flags,
         deps: Some(deps.clone()),
@@ -278,15 +277,15 @@ where
     );
     let read_lock = lock.downgrade();
     let lazy_scope = create_lazy_scope(&deps);
+    let iter: Vec<&RelocatedDylib<'_>> = read_lock.global.values().chain(deps.iter()).collect();
     for idx in order {
         let lib = core::mem::take(&mut new_libs[idx]).unwrap();
         log::debug!("Relocating dylib [{}]", lib.name());
-        let iter = read_lock.global.values().chain(deps.iter());
-        let is_lazy = lib.dylib.is_lazy();
-        lib.dylib.relocate(
-            iter,
-            &|name| builtin::BUILTIN.get(name).copied(),
-            deal_unknown,
+        let is_lazy = lib.is_lazy();
+        lib.relocate(
+            &iter,
+            &|_| None,
+            &mut deal_unknown,
             if is_lazy {
                 Some(lazy_scope.clone())
             } else {
@@ -418,9 +417,10 @@ mod imp {
 
 use imp::build_ld_cache;
 
-#[allow(unused_variables)]
 /// # Safety
 /// It is the same as `dlopen`.
+#[allow(unused_variables)]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const c_void {
     let mut lib = if filename.is_null() {
         MANAGER.read().all.get_index(0).unwrap().1.get_dylib()

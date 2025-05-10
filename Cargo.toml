@@ -55,7 +55,7 @@ default-features = false
 features = ['macros']
 
 [dependencies.elf_loader]
-version = "=0.10.1"
+git = "https://github.com/weizhiao/rust-elfloader"
 default-features = false
 features = ["use-libc", "log"]
 
@@ -122,10 +122,6 @@ required-features = ["mmap", "tls"]
 name = "dl_iterate_phdr"
 harness = false
 required-features = ["mmap", "tls"]
-
-[[example]]
-name = "manaul"
-required-features = ["tls", "libgcc"]
 
 [[example]]
 name = "dlopen"

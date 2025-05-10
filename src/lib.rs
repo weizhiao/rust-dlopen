@@ -63,7 +63,7 @@ use core::{any::Any, fmt::Display};
 pub use elf_loader::{Symbol, mmap::Mmap};
 #[cfg(feature = "std")]
 pub use init::init;
-pub use loader::{Builder, Dylib, ElfLibrary};
+pub use loader::{Builder, ElfLibrary};
 
 #[cfg(not(any(
     target_arch = "x86_64",

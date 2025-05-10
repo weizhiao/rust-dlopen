@@ -87,6 +87,7 @@ pub(crate) type CallBack =
 
 /// # Safety
 /// It is the same as `dl_iterate_phdr`.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dl_iterate_phdr(callback: Option<CallBack>, data: *mut c_void) -> c_int {
     let f = |info: &DlPhdrInfo| {
         if let Some(callback) = callback {

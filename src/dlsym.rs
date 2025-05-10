@@ -9,6 +9,7 @@ use elf_loader::RelocatedDylib;
 
 /// # Safety
 /// It is the same as `dlsym`.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dlsym(handle: *const c_void, symbol_name: *const c_char) -> *const c_void {
     const RTLD_DEFAULT: usize = 0;
     const RTLD_NEXT: usize = usize::MAX;

@@ -44,16 +44,15 @@ $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examp
 
 ## Architecture Support
 
-| Arch        | Support | Lazy Binding | Test    |
-| ----------- | ------- | ------------ | ------- |
-| x86_64      | ✅       | ✅            | ✅(CI)   |
-| aarch64     | ✅       | ✅            | ✅(QEMU) |
-| riscv64     | ✅       | ✅            | ✅(QEMU) |
-| loongarch64 | ✅       | ❌            | ❌       |
+| Arch        | Support | Lazy Binding | Test      |
+| ----------- | ------- | ------------ | --------- |
+| x86_64      | ✅       | ✅            | ✅(CI)     |
+| aarch64     | ✅       | ✅            | ✅(Manual) |
+| riscv64     | ✅       | ✅            | ✅(Manual) |
+| loongarch64 | ✅       | ❌            | ❌         |
 
 ## Examples
 
-### Example 1
 The `dlopen` interface is used to load dynamic libraries, and the `dl_iterate_phdr` interface is used to iterate through the already loaded dynamic libraries. Additionally, this library uses the `log` crate, and you can use your preferred library to output log information to view the workflow of `dlopen-rs`. In the examples of this library, the `env_logger` crate is used.
 ```rust
 use dlopen_rs::ELFLibrary;
@@ -83,45 +82,6 @@ fn main() {
         Ok(())
     })
     .unwrap();
-}
-```
-
-### Example 2
-Fine-grained control of the load flow of the dynamic library, you can replace certain functions in the dynamic library that need to be relocated with your own implementation. In the following example, we replace `malloc` with `mymalloc` in the dynamic library and turn on lazy binding.
-```rust
-use dlopen_rs::ELFLibrary;
-use libc::size_t;
-use std::{ffi::c_void, path::Path};
-
-extern "C" fn mymalloc(size: size_t) -> *mut c_void {
-    println!("malloc:{}bytes", size);
-    unsafe { libc::malloc(size) }
-}
-
-fn main() {
-    std::env::set_var("RUST_LOG", "debug");
-    env_logger::init();
-    dlopen_rs::init();
-    let path = Path::new("./target/release/libexample.so");
-    let libc = ElfLibrary::load_existing("libc.so.6").unwrap();
-    let libgcc = ElfLibrary::load_existing("libgcc_s.so.1").unwrap();
-
-    let libexample = ElfLibrary::from_file(path, OpenFlags::CUSTOM_NOT_REGISTER)
-        .unwrap()
-        .relocate_with(&[libc, libgcc], &|name: &str| {
-            if name == "malloc" {
-                return Some(mymalloc as _);
-            } else {
-                return None;
-            }
-        })
-        .unwrap();
-
-    let add = unsafe { libexample.get::<fn(i32, i32) -> i32>("add").unwrap() };
-    println!("{}", add(1, 1));
-
-    let print = unsafe { libexample.get::<fn(&str)>("print").unwrap() };
-    print("dlopen-rs: hello world");
 }
 ```
 

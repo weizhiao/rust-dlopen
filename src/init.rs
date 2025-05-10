@@ -137,7 +137,7 @@ pub(crate) unsafe fn from_raw(
     } else {
         usize::MAX
     };
-    let new_segments = create_segments(segments.base(), len).unwrap();
+    let new_segments: ElfSegments = create_segments(segments.base(), len).unwrap();
     let lib = unsafe {
         RelocatedDylib::new_uncheck(
             name,
@@ -156,6 +156,7 @@ type IterPhdr = extern "C" fn(callback: Option<CallBack>, data: *mut c_void) -> 
 // 寻找libc中的dl_iterate_phdr函数
 fn iterate_phdr(start: *const LinkMap, mut f: impl FnMut(Symbol<IterPhdr>)) {
     let mut cur_map_ptr = start;
+	#[cfg(feature = "tls")]
     while !cur_map_ptr.is_null() {
         let cur_map = unsafe { &*cur_map_ptr };
         let name = unsafe { CStr::from_ptr(cur_map.l_name).to_owned() };
@@ -164,6 +165,41 @@ fn iterate_phdr(start: *const LinkMap, mut f: impl FnMut(Symbol<IterPhdr>)) {
             continue;
         };
         if let Some(lib) = unsafe { from_raw(name, segments, cur_map.l_ld, None).unwrap() } {
+            if lib.name().contains("ld-") {
+                let tls_get_addr = unsafe {
+                    lib.get::<extern "C" fn(tls_index: &crate::loader::tls::TlsIndex) -> *const u8>(
+                        "__tls_get_addr",
+                    )
+                    .unwrap()
+                };
+                unsafe { crate::loader::tls::TLS_GET_ADDR = Some(core::mem::transmute(tls_get_addr)) };
+                break;
+            }
+        };
+        cur_map_ptr = cur_map.l_next;
+    }
+	
+	cur_map_ptr = start;
+	while !cur_map_ptr.is_null() {
+        let cur_map = unsafe { &*cur_map_ptr };
+        let name = unsafe { CStr::from_ptr(cur_map.l_name).to_owned() };
+        let Some(segments) = create_segments(cur_map.l_addr as usize, usize::MAX) else {
+            cur_map_ptr = cur_map.l_next;
+            continue;
+        };
+        if let Some(lib) = unsafe { from_raw(name, segments, cur_map.l_ld, None).unwrap() } {
+            #[cfg(feature = "tls")]
+            if lib.name().contains("ld-") {
+                let tls_get_addr = unsafe {
+                    lib.get::<extern "C" fn(tls_index: &crate::loader::tls::TlsIndex) -> *const u8>(
+                        "__tls_get_addr",
+                    )
+                    .unwrap()
+                };
+                unsafe { crate::loader::tls::TLS_GET_ADDR = Some(core::mem::transmute(tls_get_addr)) };
+                continue;
+            }
+
             if lib.name().contains("libc.so") {
                 f(unsafe { lib.get::<IterPhdr>("dl_iterate_phdr").unwrap() });
                 #[cfg(feature = "tls")]

@@ -44,16 +44,15 @@ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/example
 
 ## 指令集支持
 
-| 指令集      | 支持 | 延迟绑定 | 测试    |
-| ----------- | ---- | -------- | ------- |
-| x86_64      | ✅    | ✅        | ✅(CI)   |
-| aarch64     | ✅    | ✅        | ✅(QEMU) |
-| riscv64     | ✅    | ✅        | ✅(QEMU) |
-| loongarch64 | ✅    | ❌        | ❌       |
+| 指令集      | 支持 | 延迟绑定 | 测试      |
+| ----------- | ---- | -------- | --------- |
+| x86_64      | ✅    | ✅        | ✅(CI)     |
+| aarch64     | ✅    | ✅        | ✅(Manual) |
+| riscv64     | ✅    | ✅        | ✅(Manual) |
+| loongarch64 | ✅    | ❌        | ❌         |
 
 ## 示例
 
-### 示例1
 使用`dlopen`接口加载动态库，使用`dl_iterate_phdr`接口遍历已经加载的动态库。此外本库使用了`log`库，你可以使用自己喜欢的库输出日志信息，来查看dlopen-rs的工作流程，本库的例子中使用的是`env_logger`库。
 ```rust
 use dlopen_rs::{ElfLibrary, OpenFlags};
@@ -83,45 +82,6 @@ fn main() {
         Ok(())
     })
     .unwrap();
-}
-```
-
-### 示例2
-细粒度地控制动态库的加载流程,可以将动态库中需要重定位的某些函数换成自己实现的函数。下面这个例子中就是把动态库中的`malloc`替换为了`mymalloc`。
-```rust
-use dlopen_rs::{ElfLibrary, OpenFlags};
-use libc::size_t;
-use std::{ffi::c_void, path::Path};
-
-extern "C" fn mymalloc(size: size_t) -> *mut c_void {
-    println!("malloc:{}bytes", size);
-    unsafe { libc::malloc(size) }
-}
-
-fn main() {
-    std::env::set_var("RUST_LOG", "debug");
-    env_logger::init();
-    dlopen_rs::init();
-    let path = Path::new("./target/release/libexample.so");
-    let libc = ElfLibrary::load_existing("libc.so.6").unwrap();
-    let libgcc = ElfLibrary::load_existing("libgcc_s.so.1").unwrap();
-
-    let libexample = ElfLibrary::from_file(path, OpenFlags::CUSTOM_NOT_REGISTER)
-        .unwrap()
-        .relocate_with(&[libc, libgcc], &|name: &str| {
-            if name == "malloc" {
-                return Some(mymalloc as _);
-            } else {
-                return None;
-            }
-        })
-        .unwrap();
-
-    let add = unsafe { libexample.get::<fn(i32, i32) -> i32>("add").unwrap() };
-    println!("{}", add(1, 1));
-
-    let print = unsafe { libexample.get::<fn(&str)>("print").unwrap() };
-    print("dlopen-rs: hello world");
 }
 ```
 

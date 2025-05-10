@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use dlopen_rs::{ElfLibrary, OpenFlags};
 use libloading::Library;
 use std::path::Path;
@@ -6,16 +6,6 @@ use std::path::Path;
 fn load(c: &mut Criterion) {
     dlopen_rs::init();
     let path = Path::new("./target/release/libexample.so");
-    let libc = ElfLibrary::load_existing("libc.so.6").unwrap();
-    let libgcc = ElfLibrary::load_existing("libgcc_s.so.1").unwrap();
-    c.bench_function("dlopen-rs:from_file", |b| {
-        b.iter(|| {
-            let _libexample = ElfLibrary::from_file(path, OpenFlags::CUSTOM_NOT_REGISTER)
-                .unwrap()
-                .relocate(&[libc.clone(), libgcc.clone()])
-                .unwrap();
-        });
-    });
     c.bench_function("dlopen-rs:dlopen", |b| {
         b.iter(|| {
             let _libexample = ElfLibrary::dlopen(path, OpenFlags::RTLD_GLOBAL).unwrap();

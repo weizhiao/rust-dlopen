@@ -1,4 +1,4 @@
-use crate::{Dylib, ElfLibrary, register::MANAGER};
+use crate::{ElfLibrary, register::MANAGER};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     fmt::Debug,
@@ -15,7 +15,7 @@ pub struct CDlinfo {
 
 pub struct DlInfo {
     /// dylib
-    dylib: Dylib,
+    dylib: ElfLibrary,
     /// Name of symbol whose definition overlaps addr
     sname: Option<&'static CStr>,
     /// Exact address of symbol named in dli_sname
@@ -24,7 +24,7 @@ pub struct DlInfo {
 
 impl DlInfo {
     #[inline]
-    pub fn dylib(&self) -> &Dylib {
+    pub fn dylib(&self) -> &ElfLibrary {
         &self.dylib
     }
 
@@ -56,7 +56,7 @@ impl Debug for DlInfo {
 }
 
 impl ElfLibrary {
-    fn addr2dso(addr: usize) -> Option<Dylib> {
+    fn addr2dso(addr: usize) -> Option<ElfLibrary> {
         log::trace!("addr2dso: addr [{:#x}]", addr);
         MANAGER.read().all.values().find_map(|v| {
             let start = v.relocated_dylib_ref().base();
@@ -107,6 +107,7 @@ impl ElfLibrary {
 
 /// # Safety
 /// It is the same as `dladdr`.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dladdr(addr: *const c_void, info: *mut CDlinfo) -> c_int {
     if let Some(dl_info) = ElfLibrary::dladdr(addr as usize) {
         let info = unsafe { &mut *info };

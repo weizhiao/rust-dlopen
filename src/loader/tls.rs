@@ -72,7 +72,8 @@ impl Drop for ElfTls {
     }
 }
 
-pub(crate) unsafe extern "C" fn tls_get_addr(tls_index: &TlsIndex) -> *const u8 {
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn __tls_get_addr(tls_index: &TlsIndex) -> *const u8 {
     if tls_index.ti_module > MAX_TLS_INDEX {
         let tls = unsafe { &*(tls_index.ti_module as *const TlsInner) };
         let val = unsafe { pthread_getspecific(tls.key) };
@@ -94,10 +95,7 @@ pub(crate) unsafe extern "C" fn tls_get_addr(tls_index: &TlsIndex) -> *const u8 
         };
         unsafe { data.add(tls_index.ti_offset.wrapping_add(TLS_DTV_OFFSET)) }
     } else {
-        unsafe extern "C" {
-            fn __tls_get_addr(tls_index: &TlsIndex) -> *const u8;
-        }
-        unsafe { __tls_get_addr(tls_index) }
+        unsafe { TLS_GET_ADDR.unwrap()(tls_index) }
     }
 }
 
@@ -107,6 +105,8 @@ static mut ERRNO_OFFSET: usize = 0;
 static mut __RESP_OFFSET: usize = 0;
 // __h_errno
 static mut __H_ERRNO_OFFSET: usize = 0;
+
+pub(crate) static mut TLS_GET_ADDR: Option<unsafe extern "C" fn(&TlsIndex) -> *const u8> = None;
 
 pub(crate) fn init_tls(resp: usize, h_errno: usize) {
     let errno = unsafe { __errno_location() } as usize;
