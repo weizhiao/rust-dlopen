@@ -49,10 +49,13 @@ mod dl_iterate_phdr;
 mod dladdr;
 mod dlopen;
 mod dlsym;
+mod find;
 #[cfg(feature = "std")]
 mod init;
 mod loader;
 mod register;
+#[cfg(feature = "tls")]
+mod tls;
 use alloc::{
     boxed::Box,
     string::{String, ToString},

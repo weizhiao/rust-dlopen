@@ -24,35 +24,12 @@ version = "0.10.0"
 default-features = false
 features = ["rwlock", "lazy", "mutex", "spin_mutex"]
 
-[dependencies.unwinding]
-version = "0.2.5"
-default-features = false
-features = ["fde-custom", "unwinder"]
-optional = true
-
-[dependencies.gimli]
-version = "0.31"
-default-features = false
-features = ["read-core"]
-optional = true
-
-[dependencies.hashbrown]
-version = '0.15.2'
-default-features = false
-features = ['inline-more']
-optional = true
-
 [dependencies.indexmap]
 version = '2.9.0'
 
 [dependencies.libc]
 workspace = true
 optional = true
-
-[dependencies.phf]
-version = '0.11'
-default-features = false
-features = ['macros']
 
 [dependencies.elf_loader]
 git = "https://github.com/weizhiao/rust-elfloader"
@@ -69,11 +46,10 @@ optional = true
 
 [dependencies]
 bitflags = "2.6.0"
-cfg-if = '1.0'
 log = "0.4.22"
 
 [features]
-default = ["mmap", "tls", "libgcc", "debug"]
+default = ["mmap", "tls", "debug"]
 # enable this when you want to use gdb/lldb to debug the loaded dynamic libraries
 debug = ["std"]
 # enable std
@@ -84,18 +60,6 @@ mmap = ["std", "elf_loader/mmap"]
 tls = ["std", "dep:libc", "dep:thread-register"]
 # activate specific versions of symbols for dynamic library loading
 version = ["elf_loader/version"]
-# enable this when you want to use the exception handling mechanism provided by dlopen-rs
-unwinding = ["dep:unwinding", "dep:hashbrown"]
-# enable this when program uses libgcc to handle exceptions
-libgcc = ["dep:gimli"]
-# enable this when program uses libunwind to handle exceptions
-libunwind = ["dep:gimli"]
-# see https://github.com/nbdd0121/unwinding/#unwinder
-fde-phdr-dl = ["unwinding?/fde-phdr-dl"]
-# see https://github.com/nbdd0121/unwinding/#baremetal
-fde-static = ["unwinding?/fde-static"]
-# see https://github.com/nbdd0121/unwinding/#baremetal
-fde-gnu-eh-frame-hdr = ["unwinding?/fde-gnu-eh-frame-hdr"]
 
 [dev-dependencies]
 criterion = "0.5.1"
@@ -125,4 +89,4 @@ required-features = ["mmap", "tls"]
 
 [[example]]
 name = "dlopen"
-required-features = ["libgcc", "tls"]
+required-features = ["tls"]

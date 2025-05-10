@@ -27,7 +27,7 @@ jobs:
       matrix:
         target: [ x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, riscv64gc-unknown-linux-gnu ]
         channel: [ 1.85.0, stable ]
-        features: [ "std, libgcc", "tls, libunwind", "libgcc,tls,debug,version", "mmap" ]
+        features: [ "std", "tls,debug,version", "mmap" ]
 
   test:
     runs-on: ubuntu-latest
@@ -46,4 +46,4 @@ jobs:
       matrix:
         target: [ x86_64-unknown-linux-gnu ]
         channel: [ 1.85.0, stable ]
-        features: [ "mmap,libgcc,tls,debug"]
+        features: [ "mmap, tls, debug"]

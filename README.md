@@ -31,16 +31,13 @@ $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examp
 5. Allows repeated loading of the same dynamic library into memory. Using the `CUSTOM_NOT_REGISTER` flag in OpenFlags enables multiple coexisting copies of a library (identical or modified) in memory, facilitating runtime dynamic library `hot-swapping`.
 
 ## Feature
-| Feature   | Default | Description                                                                                                                                           |
-| --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| std       | Yes     | Enable `std`                                                                                                                                          |
-| debug     | No      | Enable this to use gdb/lldb for debugging loaded dynamic libraries. Note that only dynamic libraries loaded using dlopen-rs can be debugged with gdb. |
-| mmap      | Yes     | Enable default implementation on platforms with mmap                                                                                                  |  |
-| version   | No      | Activate specific versions of symbols for dynamic library loading                                                                                     |
-| tls       | Yes     | Enable this to use thread local storage.                                                                                                              |  |
-| unwinding | No      | Enable this to use the exception handling mechanism provided by dlopen-rs.                                                                            |
-| libgcc    | Yes     | Enable this if the program uses libgcc to handle exceptions.                                                                                          |
-| libunwind | No      | Enable this if the program uses libunwind to handle exceptions.                                                                                       |
+| Feature | Default | Description                                                        |
+| ------- | ------- | ------------------------------------------------------------------ |
+| std     | Yes     | Enable `std`                                                       |
+| debug   | Yes     | Enable this to use gdb/lldb for debugging loaded dynamic libraries |
+| mmap    | Yes     | Enable default implementation on platforms with mmap               |
+| version | No      | Activate specific versions of symbols for dynamic library loading  |
+| tls     | Yes     | Enable this to use thread local storage.                           |
 
 ## Architecture Support
 

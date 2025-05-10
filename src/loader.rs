@@ -1,13 +1,8 @@
-pub(crate) mod ehframe;
-#[cfg(feature = "tls")]
-pub(crate) mod tls;
-
 #[cfg(feature = "debug")]
 use super::debug::DebugInfo;
 use crate::{OpenFlags, Result, find_symbol_error};
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::CStr, fmt::Debug};
-use ehframe::EhFrame;
 use elf_loader::{
     CoreComponent, CoreComponentRef, ElfDylib, Loader, RelocatedDylib, Symbol, UserData,
     abi::PT_GNU_EH_FRAME,
@@ -22,6 +17,14 @@ pub(crate) const EH_FRAME_ID: u8 = 0;
 pub(crate) const DEBUG_INFO_ID: u8 = 1;
 #[cfg(feature = "tls")]
 const TLS_ID: u8 = 2;
+
+pub(crate) struct EhFrame(pub usize);
+
+impl EhFrame {
+    pub(crate) fn new(eh_frame_hdr: usize) -> Self {
+        EhFrame(eh_frame_hdr)
+    }
+}
 
 #[inline]
 pub(crate) fn find_symbol<'lib, T>(
@@ -50,10 +53,7 @@ fn parse_phdr(
         PT_GNU_EH_FRAME => {
             data.insert(
                 EH_FRAME_ID,
-                Box::new(EhFrame::new(
-                    phdr,
-                    segments.base()..segments.base() + segments.len(),
-                )),
+                Box::new(EhFrame::new(phdr.p_vaddr as usize + segments.base())),
             );
         }
         #[cfg(feature = "debug")]
@@ -71,7 +71,10 @@ fn parse_phdr(
         }
         #[cfg(feature = "tls")]
         elf_loader::abi::PT_TLS => {
-            data.insert(TLS_ID, Box::new(tls::ElfTls::new(phdr, segments.base())));
+            data.insert(
+                TLS_ID,
+                Box::new(crate::tls::ElfTls::new(phdr, segments.base())),
+            );
         }
         _ => {}
     }
@@ -95,7 +98,7 @@ pub(crate) fn deal_unknown(
                 core.user_data()
                     .get(TLS_ID)
                     .unwrap()
-                    .downcast_ref::<tls::ElfTls>()
+                    .downcast_ref::<crate::tls::ElfTls>()
                     .unwrap_unchecked()
                     .module_id()
             };
@@ -122,7 +125,7 @@ pub(crate) fn deal_unknown(
             let r_off = rela.r_offset();
             if r_sym != 0 {
                 let (dynsym, syminfo) = lib.symtab().unwrap().symbol_idx(r_sym);
-                if let Some(val) = tls::get_libc_tls_offset(syminfo.name()) {
+                if let Some(val) = crate::tls::get_libc_tls_offset(syminfo.name()) {
                     let ptr = (lib.base() + r_off) as *mut usize;
                     unsafe { ptr.write(val) };
                     return Ok(());
@@ -267,6 +270,12 @@ impl ElfLibrary {
     #[inline]
     pub fn base(&self) -> usize {
         self.inner.base()
+    }
+
+    /// Gets the memory length of the elf object map.
+    #[inline]
+    pub fn map_len(&self) -> usize {
+        self.inner.map_len()
     }
 
     /// Get the program headers of the dynamic library.

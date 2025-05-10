@@ -1,4 +1,4 @@
-use crate::{ElfLibrary, register::MANAGER};
+use crate::{ElfLibrary, find::addr2dso};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     fmt::Debug,
@@ -56,20 +56,6 @@ impl Debug for DlInfo {
 }
 
 impl ElfLibrary {
-    fn addr2dso(addr: usize) -> Option<ElfLibrary> {
-        log::trace!("addr2dso: addr [{:#x}]", addr);
-        MANAGER.read().all.values().find_map(|v| {
-            let start = v.relocated_dylib_ref().base();
-            let end = start + v.relocated_dylib_ref().map_len();
-            log::trace!("addr2dso: [{}] [{:#x}]-[{:#x}]", v.shortname(), start, end);
-            if (start..end).contains(&addr) {
-                Some(v.get_dylib())
-            } else {
-                None
-            }
-        })
-    }
-
     /// determines whether the address specified in addr is located in one of the shared objects loaded by the calling
     /// application.  If it is, then `dladdr` returns information about the shared object and
     /// symbol that overlaps addr.
@@ -78,7 +64,7 @@ impl ElfLibrary {
             "dladdr: Try to find the symbol information corresponding to [{:#x}]",
             addr
         );
-        Self::addr2dso(addr).map(|dylib| {
+        addr2dso(addr).map(|dylib| {
             let mut dl_info = DlInfo {
                 dylib,
                 sname: None,

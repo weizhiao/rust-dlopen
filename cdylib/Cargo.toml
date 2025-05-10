@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies.dlopen-rs]
 path = "../"
 default-features = false
-features = ["tls", "mmap", "debug", "libgcc"]
+features = ["tls", "mmap", "debug"]
 
 [dependencies]
 ctor = "0.4.1"
