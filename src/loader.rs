@@ -108,8 +108,9 @@ pub(crate) fn deal_unknown(
                     unsafe { ptr.write(cast(lib)) };
                     return Ok(());
                 } else if let Some(id) = deps.iter().find_map(|lib| unsafe {
+                    let mut precompute = syminfo.precompute();
                     lib.symtab()
-                        .lookup_filter(&syminfo)
+                        .lookup_filter(&syminfo, &mut precompute)
                         .map(|_| cast(lib.core_component_ref()))
                 }) {
                     unsafe { ptr.write(id) };

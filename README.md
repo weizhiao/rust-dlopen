@@ -68,7 +68,7 @@ fn main() {
     let print = unsafe { libexample.get::<fn(&str)>("print").unwrap() };
     print("dlopen-rs: hello world");
 	
-	let dl_info = ElfLibrary::dladdr(print.into_raw() as usize).unwrap();
+    let dl_info = ElfLibrary::dladdr(print.into_raw() as usize).unwrap();
     println!("{:?}", dl_info);
 
     ElfLibrary::dl_iterate_phdr(|info| {
