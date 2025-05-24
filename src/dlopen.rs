@@ -260,6 +260,9 @@ where
         order.push(item.idx);
     }
 
+    #[cfg(feature = "tls")]
+    crate::tls::update_generation();
+
     let deps = Arc::new(dep_libs.into_boxed_slice());
     let core = deps[0].clone();
     let res = ElfLibrary {

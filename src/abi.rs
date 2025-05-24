@@ -26,9 +26,3 @@ pub unsafe extern "C" fn dlclose(handle: *const c_void) -> c_int {
     log::info!("dlclose: Closing [{}]", dylib.name());
     0
 }
-
-#[unsafe(no_mangle)]
-// FIXME: 有内存泄漏
-extern "C" fn __cxa_thread_atexit_impl() -> c_int {
-    0
-}

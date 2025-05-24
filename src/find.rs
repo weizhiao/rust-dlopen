@@ -1,9 +1,12 @@
-use core::ffi::{c_int, c_void};
-
 use crate::{
     ElfLibrary,
+    init::LinkMap,
     loader::{EH_FRAME_ID, EhFrame},
     register::MANAGER,
+};
+use core::{
+    ffi::{c_int, c_void},
+    ptr::null,
 };
 
 #[repr(C)]
@@ -49,4 +52,11 @@ extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut DlFindObject) -> c_i
             0
         })
         .unwrap_or(-1)
+}
+
+// 本函数的作用是解决__cxa_thread_atexit_impl导致的内存泄露问题
+// 现在在程序退出时会调用__cxa_thread_atexit_impl注册的tls dtor
+#[unsafe(no_mangle)]
+extern "C" fn _dl_find_dso_for_object(_addr: usize) -> *const LinkMap {
+    null()
 }

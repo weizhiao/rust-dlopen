@@ -1,12 +1,13 @@
 #[cfg(feature = "debug")]
 use super::debug::DebugInfo;
-use crate::{OpenFlags, Result, find_symbol_error};
+use crate::{OpenFlags, Result, find_symbol_error, tls::TLS_INFO_ID};
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::CStr, fmt::Debug};
 use elf_loader::{
     CoreComponent, CoreComponentRef, ElfDylib, Loader, RelocatedDylib, Symbol, UserData,
     abi::PT_GNU_EH_FRAME,
     arch::{ElfPhdr, ElfRela},
+    find_symdef,
     mmap::{Mmap, MmapImpl},
     object::{ElfBinary, ElfObject},
     segment::ElfSegments,
@@ -15,8 +16,6 @@ use elf_loader::{
 pub(crate) const EH_FRAME_ID: u8 = 0;
 #[cfg(feature = "debug")]
 pub(crate) const DEBUG_INFO_ID: u8 = 1;
-#[cfg(feature = "tls")]
-const TLS_ID: u8 = 2;
 
 pub(crate) struct EhFrame(pub usize);
 
@@ -71,10 +70,7 @@ fn parse_phdr(
         }
         #[cfg(feature = "tls")]
         elf_loader::abi::PT_TLS => {
-            data.insert(
-                TLS_ID,
-                Box::new(crate::tls::ElfTls::new(phdr, segments.base())),
-            );
+            crate::tls::add_tls(segments, phdr, data, crate::tls::TlsState::Dynamic);
         }
         _ => {}
     }
@@ -96,26 +92,18 @@ pub(crate) fn deal_unknown(
             let ptr = (lib.base() + r_off) as *mut usize;
             let cast = |core: &elf_loader::CoreComponent| unsafe {
                 core.user_data()
-                    .get(TLS_ID)
+                    .get(TLS_INFO_ID)
                     .unwrap()
-                    .downcast_ref::<crate::tls::ElfTls>()
-                    .unwrap_unchecked()
-                    .module_id()
+                    .downcast_ref::<crate::tls::TlsInfo>()
+                    .unwrap()
+                    .modid
             };
             if r_sym != 0 {
-                let (dynsym, syminfo) = lib.symtab().unwrap().symbol_idx(r_sym);
-                if dynsym.is_local() {
-                    unsafe { ptr.write(cast(lib)) };
-                    return Ok(());
-                } else if let Some(id) = deps.iter().find_map(|lib| unsafe {
-                    let mut precompute = syminfo.precompute();
-                    lib.symtab()
-                        .lookup_filter(&syminfo, &mut precompute)
-                        .map(|_| cast(lib.core_component_ref()))
-                }) {
-                    unsafe { ptr.write(id) };
-                    return Ok(());
-                };
+                let symdef = find_symdef(lib, deps, r_sym).unwrap();
+                unsafe {
+                    ptr.write(cast(symdef.lib));
+                }
+                return Ok(());
             } else {
                 unsafe { ptr.write(cast(lib)) };
                 return Ok(());
@@ -126,11 +114,7 @@ pub(crate) fn deal_unknown(
             let r_off = rela.r_offset();
             if r_sym != 0 {
                 let (dynsym, syminfo) = lib.symtab().unwrap().symbol_idx(r_sym);
-                if let Some(val) = crate::tls::get_libc_tls_offset(syminfo.name()) {
-                    let ptr = (lib.base() + r_off) as *mut usize;
-                    unsafe { ptr.write(val) };
-                    return Ok(());
-                }
+                let ptr = (lib.base() + r_off) as *mut usize;
             }
         }
         _ => {}

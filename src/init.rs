@@ -4,15 +4,19 @@ use crate::{
     dl_iterate_phdr::CallBack,
     loader::{EH_FRAME_ID, EhFrame},
     register::{DylibState, MANAGER, global_find, register},
+    tls::{
+        DTV_OFFSET, TLS_GENERATION, TLS_STATIC_ALIGN, TLS_STATIC_SIZE, TlsState, add_tls, init_tls,
+    },
 };
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
+    mem::ManuallyDrop,
     num::NonZero,
     ptr::{NonNull, addr_of, addr_of_mut, null_mut},
 };
 use elf_loader::{
     RelocatedDylib, Symbol, UserData,
-    abi::{PT_DYNAMIC, PT_GNU_EH_FRAME, PT_LOAD},
+    abi::{PT_DYNAMIC, PT_GNU_EH_FRAME, PT_LOAD, PT_TLS},
     arch::{Dyn, ElfPhdr},
     dynamic::ElfDynamic,
     segment::{ElfSegments, MASK, PAGE_SIZE},
@@ -20,6 +24,7 @@ use elf_loader::{
 };
 use spin::Once;
 use std::{env, ffi::CString, os::unix::ffi::OsStringExt, path::PathBuf, sync::Arc};
+use thread_register::{ModifyRegister, ThreadRegister};
 
 #[repr(C)]
 pub(crate) struct LinkMap {
@@ -86,11 +91,11 @@ fn create_segments(base: usize, len: usize) -> Option<ElfSegments> {
     Some(ElfSegments::new(memory, len, drop_handle))
 }
 
-pub(crate) unsafe fn from_raw(
+unsafe fn from_raw(
     name: CString,
     segments: ElfSegments,
     dynamic_ptr: *const Dyn,
-    phdrs: Option<&'static [ElfPhdr]>,
+    extra: Option<(&'static [ElfPhdr], &StaticTlsInfo, usize)>,
 ) -> Result<Option<RelocatedDylib<'static>>> {
     #[allow(unused_mut)]
     let mut dynamic = ElfDynamic::new(dynamic_ptr, &segments)?;
@@ -112,7 +117,7 @@ pub(crate) unsafe fn from_raw(
     let mut user_data = UserData::empty();
     #[cfg(feature = "debug")]
     unsafe {
-        if phdrs.is_some() {
+        if extra.is_some() {
             use super::debug::*;
             user_data.insert(
                 crate::loader::DEBUG_INFO_ID,
@@ -124,7 +129,8 @@ pub(crate) unsafe fn from_raw(
             );
         }
     };
-    let len = if let Some(phdrs) = phdrs {
+    let mut use_phdrs: &[ElfPhdr] = &[];
+    let len = if let Some((phdrs, tls, modid)) = extra {
         let mut min_vaddr = usize::MAX;
         let mut max_vaddr = 0;
         phdrs.iter().for_each(|phdr| {
@@ -137,8 +143,16 @@ pub(crate) unsafe fn from_raw(
                     EH_FRAME_ID,
                     Box::new(EhFrame::new(phdr.p_vaddr as usize + segments.base())),
                 );
+            } else if phdr.p_type == PT_TLS {
+                add_tls(
+                    &segments,
+                    phdr,
+                    &mut user_data,
+                    TlsState::Initialized(tls.get_offset(modid - 1)),
+                );
             }
         });
+        use_phdrs = phdrs;
         max_vaddr - min_vaddr
     } else {
         usize::MAX
@@ -149,7 +163,7 @@ pub(crate) unsafe fn from_raw(
             name,
             new_segments.base(),
             dynamic,
-            phdrs.unwrap_or(&[]),
+            use_phdrs,
             new_segments,
             user_data,
         )
@@ -162,7 +176,7 @@ type IterPhdr = extern "C" fn(callback: Option<CallBack>, data: *mut c_void) -> 
 // 寻找libc中的dl_iterate_phdr函数
 fn iterate_phdr(start: *const LinkMap, mut f: impl FnMut(Symbol<IterPhdr>)) {
     let mut cur_map_ptr = start;
-    #[cfg(feature = "tls")]
+    let mut needed_libs = Vec::new();
     while !cur_map_ptr.is_null() {
         let cur_map = unsafe { &*cur_map_ptr };
         let name = unsafe { CStr::from_ptr(cur_map.l_name).to_owned() };
@@ -171,67 +185,37 @@ fn iterate_phdr(start: *const LinkMap, mut f: impl FnMut(Symbol<IterPhdr>)) {
             continue;
         };
         if let Some(lib) = unsafe { from_raw(name, segments, cur_map.l_ld, None).unwrap() } {
-            if lib.name().contains("ld-") {
-                let tls_get_addr = unsafe {
-                    lib.get::<extern "C" fn(tls_index: &crate::tls::TlsIndex) -> *const u8>(
-                        "__tls_get_addr",
-                    )
-                    .unwrap()
-                };
-                unsafe { crate::tls::TLS_GET_ADDR = Some(core::mem::transmute(tls_get_addr)) };
-                break;
-            }
-        };
-        cur_map_ptr = cur_map.l_next;
-    }
-
-    cur_map_ptr = start;
-    while !cur_map_ptr.is_null() {
-        let cur_map = unsafe { &*cur_map_ptr };
-        let name = unsafe { CStr::from_ptr(cur_map.l_name).to_owned() };
-        let Some(segments) = create_segments(cur_map.l_addr as usize, usize::MAX) else {
-            cur_map_ptr = cur_map.l_next;
-            continue;
-        };
-        if let Some(lib) = unsafe { from_raw(name, segments, cur_map.l_ld, None).unwrap() } {
-            #[cfg(feature = "tls")]
-            if lib.name().contains("ld-") {
-                let tls_get_addr = unsafe {
-                    lib.get::<extern "C" fn(tls_index: &crate::tls::TlsIndex) -> *const u8>(
-                        "__tls_get_addr",
-                    )
-                    .unwrap()
-                };
-                unsafe { crate::tls::TLS_GET_ADDR = Some(core::mem::transmute(tls_get_addr)) };
-                continue;
-            }
-
-            if lib.name().contains("libc.so") {
-                f(unsafe { lib.get::<IterPhdr>("dl_iterate_phdr").unwrap() });
-                #[cfg(feature = "tls")]
-                {
-                    let dlopen = unsafe {
-                        lib.get::<extern "C" fn (filename: *const c_char, flags: c_int) -> *const c_void >("dlopen")
-							.unwrap()
-                    };
-                    let libc_handle = dlopen(lib.cname().as_ptr(), 0);
-                    let dlsym = unsafe {
-                        lib.get::<extern "C" fn(*const c_void, *const c_char) -> *const c_void>(
-                            "dlsym",
-                        )
-                        .unwrap()
-                    };
-                    crate::tls::init_tls(
-                        dlsym(libc_handle, c"__resp".as_ptr()) as _,
-                        dlsym(libc_handle, c"__h_errno".as_ptr()) as _,
-                    );
+            let lib_name = lib.name();
+            if lib_name.contains("libc.so") || lib_name.contains("ld-") {
+                needed_libs.push(lib);
+                // 目前只要用这两个
+                if needed_libs.len() >= 2 {
+                    break;
                 }
-                return;
             }
         };
         cur_map_ptr = cur_map.l_next;
     }
-    panic!("can not find libc's dl_iterate_phdr");
+    assert!(needed_libs.len() == 2);
+    for lib in needed_libs {
+        if lib.name().contains("libc.so") {
+            f(unsafe { lib.get::<IterPhdr>("dl_iterate_phdr").unwrap() });
+        } else if lib.name().contains("ld-") {
+            let mut tls_static_size: usize = 0;
+            let mut tls_static_align: usize = 0;
+            unsafe {
+                lib.get::<extern "C" fn(*mut usize, *mut usize)>("_dl_get_tls_static_info")
+                    .unwrap()(&mut tls_static_size, &mut tls_static_align);
+            }
+            unsafe { TLS_STATIC_SIZE = tls_static_size };
+            unsafe { TLS_STATIC_ALIGN = tls_static_align };
+            log::debug!(
+                "tls static info: size: {}, align: {}",
+                tls_static_size,
+                tls_static_align
+            )
+        }
+    }
 }
 
 fn init_argv() {
@@ -247,8 +231,40 @@ fn init_argv() {
     }
 }
 
-unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut c_void) -> c_int {
+#[repr(C)]
+struct DtvPointer {
+    val: *const c_void,
+    free: *const c_void,
+}
+
+#[repr(C)]
+union Dtv {
+    counter: usize,
+    pointer: ManuallyDrop<DtvPointer>,
+}
+
+struct StaticTlsInfo {
+    dtv: &'static [Dtv],
+    tcb: usize,
+}
+
+impl StaticTlsInfo {
+    fn new() -> StaticTlsInfo {
+        let tcb = ThreadRegister::base();
+        let dtv = unsafe { ThreadRegister::get::<*const Dtv>(DTV_OFFSET) };
+        let count = unsafe { dtv.sub(1).read().counter };
+        let slice = unsafe { core::slice::from_raw_parts(dtv.add(1), count) };
+        StaticTlsInfo { dtv: slice, tcb }
+    }
+
+    fn get_offset(&self, modid: usize) -> usize {
+        unsafe { self.tcb.wrapping_sub(self.dtv[modid].pointer.val as usize) }
+    }
+}
+
+unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, data: *mut c_void) -> c_int {
     let info = unsafe { &*info };
+    let static_tls_info = unsafe { &mut *(data as *mut StaticTlsInfo) };
     let base = info.dlpi_addr;
     let phdrs = unsafe { core::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
     let dynamic_ptr = phdrs
@@ -269,7 +285,7 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut 
             CStr::from_ptr(info.dlpi_name).to_owned(),
             segments,
             dynamic_ptr,
-            Some(phdrs),
+            Some((phdrs, static_tls_info, info.dlpi_tls_modid)),
         )
     }
     .unwrap() else {
@@ -318,8 +334,11 @@ pub fn init() {
         iterate_phdr(debug.map, |iter| {
             #[cfg(feature = "debug")]
             crate::debug::init_debug(debug);
-            iter(Some(callback), null_mut());
+            let mut tls_info = StaticTlsInfo::new();
+            iter(Some(callback), &mut tls_info as *const _ as *mut _);
+            TLS_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         });
+        init_tls();
         unsafe { set_global_scope(global_find as _) };
         log::info!("Initialization is complete");
     });

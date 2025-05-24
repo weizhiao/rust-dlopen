@@ -2,7 +2,7 @@ use dlopen_rs::{ElfLibrary, OpenFlags};
 use std::path::Path;
 
 fn main() {
-    unsafe { std::env::set_var("RUST_LOG", "trace") };
+    unsafe { std::env::set_var("RUST_LOG", "debug") };
     env_logger::init();
     dlopen_rs::init();
     let path = Path::new("./target/release/libexample.so");
@@ -33,12 +33,23 @@ fn main() {
 	let panic = unsafe { libexample2.get::<fn()>("panic").unwrap() };
 	panic();
 
+	let thread_local = unsafe { libexample2.get::<fn()>("thread_local").unwrap() };
+	thread_local();
+
     let dl_info = ElfLibrary::dladdr(backtrace.into_raw() as usize).unwrap();
     println!("{:?}", dl_info);
+
+	// let llvm = ElfLibrary::dlopen(
+    //     Path::new("/usr/lib/llvm-18/lib/libLLVM-18.so"),
+    //     OpenFlags::RTLD_NOW,
+    // )
+    // .unwrap();
 
     ElfLibrary::dl_iterate_phdr(|info| {
         println!("iterate dynamic library: {}", info.name());
         Ok(())
     })
     .unwrap();
+
+	
 }
