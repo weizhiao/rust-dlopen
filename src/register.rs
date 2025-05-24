@@ -17,6 +17,8 @@ impl Drop for ElfLibrary {
         let threshold =
             2 + self.deps.is_some() as usize + self.flags.contains(OpenFlags::RTLD_GLOBAL) as usize;
         if ref_count == threshold {
+            #[cfg(feature = "tls")]
+            crate::tls::update_generation();
             log::info!("Destroying dylib [{}]", self.inner.shortname());
             lock.all.shift_remove(self.inner.shortname());
             if self.flags.contains(OpenFlags::RTLD_GLOBAL) {
@@ -183,7 +185,6 @@ pub(crate) fn register(
     }
 }
 
-#[cfg(feature = "std")]
 pub(crate) fn global_find(name: &str) -> Option<*const ()> {
     log::debug!("Lazy Binding: [{}]", name);
     MANAGER.read().global.values().find_map(|lib| unsafe {

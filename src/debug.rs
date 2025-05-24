@@ -1,10 +1,11 @@
+use alloc::boxed::Box;
+use spin::Mutex;
+
 use crate::init::{GDBDebug, LinkMap};
 use core::{
     ffi::{CStr, c_char, c_int},
     ptr::null_mut,
 };
-use std::sync::Mutex;
-
 const RT_ADD: c_int = 1;
 const RT_CONSISTENT: c_int = 0;
 const RT_DELETE: c_int = 2;
@@ -24,7 +25,7 @@ pub(crate) struct DebugInfo {
 impl Drop for DebugInfo {
     fn drop(&mut self) {
         unsafe {
-            let mut custom_debug = DEBUG.lock().unwrap();
+            let mut custom_debug = DEBUG.lock();
             let tail = custom_debug.tail;
             let debug = &mut *custom_debug.debug;
             debug.state = RT_DELETE;
@@ -66,7 +67,7 @@ pub(crate) static DEBUG: Mutex<CustomDebug> = Mutex::new(CustomDebug {
 
 impl DebugInfo {
     pub(crate) unsafe fn new(base: usize, name: *const c_char, dynamic: usize) -> DebugInfo {
-        let mut custom_debug = DEBUG.lock().unwrap();
+        let mut custom_debug = DEBUG.lock();
         let tail = custom_debug.tail;
         assert!(
             !custom_debug.debug.is_null(),
@@ -104,7 +105,7 @@ impl DebugInfo {
 #[inline]
 pub(crate) fn init_debug(debug: &mut GDBDebug) {
     debug.map = null_mut();
-    let mut custom = DEBUG.lock().unwrap();
+    let mut custom = DEBUG.lock();
     custom.debug = debug;
     custom.tail = null_mut();
 }

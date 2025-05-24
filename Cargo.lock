@@ -323,8 +323,8 @@ checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 
 [[package]]
 name = "elf_loader"
-version = "0.10.1"
-source = "git+https://github.com/weizhiao/rust-elfloader#68a349fd6009f36981c7f247c30481d33717e9d2"
+version = "0.11.0"
+source = "git+https://github.com/weizhiao/rust-elfloader#33ded501d1dc7766e358bea5d7d72af96986cb37"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -741,8 +741,7 @@ dependencies = [
 [[package]]
 name = "thread-register"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11e2fcfc42359d511cda229a43601b5a681741bfdecfe389ab0b3ee56b53700c"
+source = "git+https://github.com/weizhiao/thread-register.git#90bd74bf8ed43b93cf3faf13e5a313c37573f1de"
 
 [[package]]
 name = "tinytemplate"
