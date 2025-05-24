@@ -1,15 +1,17 @@
+use alloc::{
+    alloc::{dealloc, handle_alloc_error},
+    boxed::Box,
+    vec::Vec,
+};
 use core::{
-    ffi::c_int,
+    alloc::Layout,
+    ffi::{c_int, c_void},
     mem::ManuallyDrop,
     ptr::{null, null_mut},
     sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 use elf_loader::{UserData, arch::ElfPhdr, segment::ElfSegments};
 use spin::Lazy;
-use std::{
-    alloc::{Layout, alloc, dealloc, handle_alloc_error},
-    os::raw::c_void,
-};
 use thread_register::{ModifyRegister, ThreadRegister};
 
 #[repr(C)]
@@ -42,7 +44,7 @@ const SLOT_SIZE: usize = 20;
 pub(crate) struct TlsInfo {
     image: &'static [u8],
     pub(crate) modid: usize,
-    static_tls_offset: Option<usize>,
+    pub(crate) static_tls_offset: Option<usize>,
     memsz: usize,
     align: usize,
 }
@@ -219,11 +221,11 @@ impl Default for DtvElem {
 impl DtvElem {
     fn new_dynamic(tls_info: &TlsInfo) -> Self {
         let layout = Layout::from_size_align(tls_info.memsz, tls_info.align).unwrap();
-        let ptr = unsafe { alloc(layout) };
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
         if ptr.is_null() {
             handle_alloc_error(layout);
         }
-        let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, tls_info.memsz) };
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, tls_info.memsz) };
         let filesz = tls_info.image.len();
         slice[..filesz].copy_from_slice(tls_info.image);
         slice[filesz..].fill(0);
@@ -236,7 +238,7 @@ impl DtvElem {
     }
 
     fn new_static(tls_info: &TlsInfo, dest: *mut u8) -> Self {
-        let slice = unsafe { std::slice::from_raw_parts_mut(dest as *mut u8, tls_info.memsz) };
+        let slice = unsafe { core::slice::from_raw_parts_mut(dest as *mut u8, tls_info.memsz) };
         let filesz = tls_info.image.len();
         slice[..filesz].copy_from_slice(tls_info.image);
         slice[filesz..].fill(0);
@@ -259,13 +261,14 @@ struct DtvHeader {
 
 impl DtvHeader {
     fn new() -> Self {
-        let dtv = vec![DtvElem { generation: 0 }];
+        let mut dtv = Vec::new();
+        dtv.push(DtvElem { generation: 0 });
         Self { dtv }
     }
 
     fn with_capicity(capacity: usize) -> Self {
         let mut dtv: Vec<DtvElem> = Vec::with_capacity(capacity);
-		dtv.push(DtvElem { generation: 0 });
+        dtv.push(DtvElem { generation: 0 });
         Self { dtv }
     }
 
@@ -449,7 +452,7 @@ fn allocate_tls_storage() -> *mut u8 {
     let size = unsafe { TLS_STATIC_SIZE };
     let align = unsafe { TLS_STATIC_ALIGN };
     let layout = Layout::from_size_align(size, align).unwrap();
-    let allocated = unsafe { alloc(layout) };
+    let allocated = unsafe { alloc::alloc::alloc(layout) };
     if allocated.is_null() {
         handle_alloc_error(layout);
     }

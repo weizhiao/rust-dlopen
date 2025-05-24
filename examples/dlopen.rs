@@ -2,12 +2,12 @@ use dlopen_rs::{ElfLibrary, OpenFlags};
 use std::path::Path;
 
 fn main() {
-    unsafe { std::env::set_var("RUST_LOG", "debug") };
+    unsafe { std::env::set_var("RUST_LOG", "trace") };
     env_logger::init();
     dlopen_rs::init();
     let path = Path::new("./target/release/libexample.so");
     let libexample1 =
-        ElfLibrary::dlopen(path, OpenFlags::CUSTOM_NOT_REGISTER | OpenFlags::RTLD_LAZY).unwrap();
+        ElfLibrary::dlopen(path.as_os_str().to_str().unwrap(), OpenFlags::CUSTOM_NOT_REGISTER | OpenFlags::RTLD_LAZY).unwrap();
     let add = unsafe { libexample1.get::<fn(i32, i32) -> i32>("add").unwrap() };
     println!("{}", add(1, 1));
 
@@ -39,11 +39,11 @@ fn main() {
     let dl_info = ElfLibrary::dladdr(backtrace.into_raw() as usize).unwrap();
     println!("{:?}", dl_info);
 
-	// let llvm = ElfLibrary::dlopen(
-    //     Path::new("/usr/lib/llvm-18/lib/libLLVM-18.so"),
-    //     OpenFlags::RTLD_NOW,
-    // )
-    // .unwrap();
+	let llvm = ElfLibrary::dlopen(
+       "/usr/lib/llvm-18/lib/libLLVM-18.so",
+        OpenFlags::RTLD_NOW,
+    )
+    .unwrap();
 
     ElfLibrary::dl_iterate_phdr(|info| {
         println!("iterate dynamic library: {}", info.name());

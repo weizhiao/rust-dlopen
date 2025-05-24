@@ -1,13 +1,12 @@
 #[cfg(feature = "debug")]
 use super::debug::DebugInfo;
-use crate::{OpenFlags, Result, find_symbol_error, tls::TLS_INFO_ID};
+use crate::{OpenFlags, Result, find_symbol_error};
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::CStr, fmt::Debug};
 use elf_loader::{
     CoreComponent, CoreComponentRef, ElfDylib, Loader, RelocatedDylib, Symbol, UserData,
     abi::PT_GNU_EH_FRAME,
     arch::{ElfPhdr, ElfRela},
-    find_symdef,
     mmap::{Mmap, MmapImpl},
     object::{ElfBinary, ElfObject},
     segment::ElfSegments,
@@ -77,44 +76,54 @@ fn parse_phdr(
     Ok(())
 }
 
-#[inline(always)]
+#[cfg(feature = "tls")]
 #[allow(unused)]
 pub(crate) fn deal_unknown(
     rela: &ElfRela,
     lib: &CoreComponent,
     deps: &[&RelocatedDylib],
 ) -> core::result::Result<(), Box<dyn Any + Send + Sync>> {
-    #[cfg(feature = "tls")]
+    use crate::tls;
+
+    fn find_tls_info(core: &elf_loader::CoreComponent) -> &crate::tls::TlsInfo {
+        core.user_data()
+            .get(crate::tls::TLS_INFO_ID)
+            .unwrap()
+            .downcast_ref::<crate::tls::TlsInfo>()
+            .unwrap()
+    }
+
     match rela.r_type() as _ {
         elf_loader::arch::REL_DTPMOD => {
             let r_sym = rela.r_symbol();
             let r_off = rela.r_offset();
             let ptr = (lib.base() + r_off) as *mut usize;
-            let cast = |core: &elf_loader::CoreComponent| unsafe {
-                core.user_data()
-                    .get(TLS_INFO_ID)
-                    .unwrap()
-                    .downcast_ref::<crate::tls::TlsInfo>()
-                    .unwrap()
-                    .modid
-            };
             if r_sym != 0 {
-                let symdef = find_symdef(lib, deps, r_sym).unwrap();
+                let symdef = elf_loader::find_symdef(lib, deps, r_sym).unwrap();
                 unsafe {
-                    ptr.write(cast(symdef.lib));
+                    ptr.write(find_tls_info(symdef.lib).modid);
                 }
                 return Ok(());
             } else {
-                unsafe { ptr.write(cast(lib)) };
+                unsafe { ptr.write(find_tls_info(lib).modid) };
                 return Ok(());
             }
         }
         elf_loader::arch::REL_TPOFF => {
             let r_sym = rela.r_symbol();
             let r_off = rela.r_offset();
+            let r_addend = rela.r_addend(lib.base());
             if r_sym != 0 {
-                let (dynsym, syminfo) = lib.symtab().unwrap().symbol_idx(r_sym);
+                let symdef = elf_loader::find_symdef(lib, deps, r_sym).unwrap();
                 let ptr = (lib.base() + r_off) as *mut usize;
+                let tls_info = find_tls_info(symdef.lib);
+                unsafe {
+                    ptr.write(
+                        symdef.sym.unwrap().st_value() + r_addend
+                            - tls_info.static_tls_offset.unwrap(),
+                    )
+                };
+				return Ok(());
             }
         }
         _ => {}
@@ -149,7 +158,7 @@ pub(crate) fn create_lazy_scope(
 fn from_impl(object: impl ElfObject, flags: OpenFlags) -> Result<ElfDylib> {
     let mut loader = Loader::<MmapImpl>::new();
     loader.set_hook(Box::new(parse_phdr));
-    #[cfg(feature = "std")]
+    #[cfg(feature = "fs")]
     unsafe {
         loader.set_init_params(
             crate::init::ARGC,
@@ -176,7 +185,7 @@ fn from_impl(object: impl ElfObject, flags: OpenFlags) -> Result<ElfDylib> {
 
 pub(super) struct FileBuilder;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "fs")]
 impl Builder for FileBuilder {
     fn create_object(path: &str) -> Result<impl ElfObject> {
         use elf_loader::object::ElfFile;
@@ -184,7 +193,7 @@ impl Builder for FileBuilder {
     }
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "fs"))]
 impl Builder for FileBuilder {
     fn create_object(path: &str) -> Result<impl ElfObject> {
         Err::<ElfBinary, crate::Error>(crate::find_lib_error(path))
@@ -210,13 +219,10 @@ impl Debug for ElfLibrary {
 
 impl ElfLibrary {
     /// Find and load a elf dynamic library from path.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "fs")]
     #[inline]
-    pub(crate) fn from_file(
-        path: impl AsRef<std::ffi::OsStr>,
-        flags: OpenFlags,
-    ) -> Result<ElfDylib> {
-        ElfLibrary::from_builder::<FileBuilder, MmapImpl>(path.as_ref().to_str().unwrap(), flags)
+    pub(crate) fn from_file(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfDylib> {
+        ElfLibrary::from_builder::<FileBuilder, MmapImpl>(path.as_ref(), flags)
     }
 
     #[inline]

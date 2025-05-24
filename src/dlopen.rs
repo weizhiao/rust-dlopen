@@ -54,10 +54,10 @@ impl ElfLibrary {
     /// let path = Path::new("/path/to/library.so");
     /// let lib = ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL).expect("Failed to load library");
     /// ```
-    #[cfg(feature = "std")]
+    #[cfg(feature = "fs")]
     #[inline]
-    pub fn dlopen(path: impl AsRef<std::ffi::OsStr>, flags: OpenFlags) -> Result<ElfLibrary> {
-        dlopen_impl::<FileBuilder, MmapImpl>(path.as_ref().to_str().unwrap(), flags, || {
+    pub fn dlopen(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfLibrary> {
+        dlopen_impl::<FileBuilder, MmapImpl>(path.as_ref(), flags, || {
             ElfLibrary::from_file(path.as_ref(), flags)
         })
     }
@@ -303,12 +303,12 @@ where
 }
 
 static LD_LIBRARY_PATH: Lazy<Box<[ElfPath]>> = Lazy::new(|| {
-    #[cfg(feature = "std")]
-    {
-        let library_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-        deal_path(&library_path)
-    }
-    #[cfg(not(feature = "std"))]
+    // #[cfg(feature = "std")]
+    // {
+    //     let library_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    //     deal_path(&library_path)
+    // }
+    // #[cfg(not(feature = "std"))]
     Box::new([])
 });
 static DEFAULT_PATH: spin::Lazy<Box<[ElfPath]>> = Lazy::new(|| unsafe {
@@ -369,45 +369,44 @@ fn find_library(
     Err(find_lib_error(format!("can not find file: {}", lib_name)))
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "fs")]
 mod imp {
     use super::ElfPath;
-    use dynamic_loader_cache::{Cache as LdCache, Result as LdResult};
-
+    use alloc::boxed::Box;
     #[inline]
     pub(super) fn build_ld_cache() -> Box<[ElfPath]> {
-        use std::collections::HashSet;
-        LdCache::load()
-            .and_then(|cache| {
-                Ok(Vec::from_iter(
-                    cache
-                        .iter()?
-                        .filter_map(LdResult::ok)
-                        .map(|entry| {
-                            // Since the `full_path` is always a file, we can always unwrap it
-                            ElfPath::from_str(
-                                entry
-                                    .full_path
-                                    .parent()
-                                    .unwrap()
-                                    .to_owned()
-                                    .to_str()
-                                    .unwrap(),
-                            )
-                            .unwrap()
-                        })
-                        .collect::<HashSet<_>>(),
-                )
-                .into_boxed_slice())
-            })
-            .unwrap_or_else(|err| {
-                log::warn!("Build ld cache failed: {}", err);
-                Box::new([])
-            })
+        // LdCache::load()
+        //     .and_then(|cache| {
+        //         Ok(Vec::from_iter(
+        //             cache
+        //                 .iter()?
+        //                 .filter_map(LdResult::ok)
+        //                 .map(|entry| {
+        //                     // Since the `full_path` is always a file, we can always unwrap it
+        //                     ElfPath::from_str(
+        //                         entry
+        //                             .full_path
+        //                             .parent()
+        //                             .unwrap()
+        //                             .to_owned()
+        //                             .to_str()
+        //                             .unwrap(),
+        //                     )
+        //                     .unwrap()
+        //                 })
+        //                 .collect::<HashSet<_>>(),
+        //         )
+        //         .into_boxed_slice())
+        //     })
+        //     .unwrap_or_else(|err| {
+        //         log::warn!("Build ld cache failed: {}", err);
+        //         Box::new([])
+        //     })
+        Box::new([])
     }
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "fs"))]
 mod imp {
     use alloc::boxed::Box;
 
@@ -428,7 +427,7 @@ pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const
     let mut lib = if filename.is_null() {
         MANAGER.read().all.get_index(0).unwrap().1.get_dylib()
     } else {
-        #[cfg(feature = "std")]
+        #[cfg(feature = "fs")]
         {
             let flags = OpenFlags::from_bits_retain(flags as _);
             let filename = unsafe { core::ffi::CStr::from_ptr(filename) };
@@ -439,7 +438,7 @@ pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const
                 return core::ptr::null();
             }
         }
-        #[cfg(not(feature = "std"))]
+        #[cfg(not(feature = "fs"))]
         return core::ptr::null();
     };
     Arc::into_raw(core::mem::take(&mut lib.deps).unwrap()) as _

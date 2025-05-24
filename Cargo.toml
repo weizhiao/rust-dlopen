@@ -42,13 +42,14 @@ bitflags = "2.6.0"
 log = "0.4.22"
 
 [features]
-default = ["mmap", "debug"]
+default = ["mmap", "debug", "use-ldso"]
+use-ldso = ["tls"]
 # enable this when you want to use gdb/lldb to debug the loaded dynamic libraries
-debug = ["std"]
+debug = []
 # enable std
-std = ["elf_loader/fs", "dep:dynamic-loader-cache", "tls"]
+fs = ["elf_loader/fs", "dep:dynamic-loader-cache"]
 # enable default implementation on devices with mmapl storage
-mmap = ["std", "elf_loader/mmap"]
+mmap = ["fs", "elf_loader/mmap"]
 # enable this when you need to use thread loca
 tls = ["dep:thread-register"]
 # activate specific versions of symbols for dynamic library loading

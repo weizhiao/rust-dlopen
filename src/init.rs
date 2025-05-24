@@ -1,18 +1,19 @@
+use crate::tls::{
+    DTV_OFFSET, TLS_GENERATION, TLS_STATIC_ALIGN, TLS_STATIC_SIZE, TlsState, add_tls, init_tls,
+};
 use crate::{
     OpenFlags, Result,
     abi::CDlPhdrInfo,
     dl_iterate_phdr::CallBack,
     loader::{EH_FRAME_ID, EhFrame},
     register::{DylibState, MANAGER, global_find, register},
-    tls::{
-        DTV_OFFSET, TLS_GENERATION, TLS_STATIC_ALIGN, TLS_STATIC_SIZE, TlsState, add_tls, init_tls,
-    },
 };
+use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, sync::Arc, vec::Vec};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     mem::ManuallyDrop,
     num::NonZero,
-    ptr::{NonNull, addr_of, addr_of_mut, null_mut},
+    ptr::{NonNull, addr_of_mut},
 };
 use elf_loader::{
     RelocatedDylib, Symbol, UserData,
@@ -23,7 +24,6 @@ use elf_loader::{
     set_global_scope,
 };
 use spin::Once;
-use std::{env, ffi::CString, os::unix::ffi::OsStringExt, path::PathBuf, sync::Arc};
 use thread_register::{ModifyRegister, ThreadRegister};
 
 #[repr(C)]
@@ -64,7 +64,7 @@ fn get_debug_struct() -> &'static mut GDBDebug {
 }
 
 static ONCE: Once = Once::new();
-static mut PROGRAM_NAME: Option<PathBuf> = None;
+//static mut PROGRAM_NAME: Option<PathBuf> = None;
 
 pub(crate) static mut ARGC: usize = 0;
 pub(crate) static mut ARGV: Vec<*mut c_char> = Vec::new();
@@ -79,10 +79,10 @@ fn create_segments(base: usize, len: usize) -> Option<ElfSegments> {
         memory
     } else {
         // 如果程序本身不是Shared object file,那么它的这个字段为0,此时无法使用程序本身的符号进行重定位
-        log::warn!(
-            "Failed to initialize an existing library: [{:?}], Because it's not a Shared object file",
-            unsafe { (*addr_of!(PROGRAM_NAME)).as_ref().unwrap() }
-        );
+        // log::warn!(
+        //     "Failed to initialize an existing library: [{:?}], Because it's not a Shared object file",
+        //     unsafe { (*addr_of!(PROGRAM_NAME)).as_ref().unwrap() }
+        // );
         return None;
     };
     unsafe fn drop_handle(_handle: NonNull<c_void>, _len: usize) -> elf_loader::Result<()> {
@@ -219,16 +219,16 @@ fn iterate_phdr(start: *const LinkMap, mut f: impl FnMut(Symbol<IterPhdr>)) {
 }
 
 fn init_argv() {
-    let mut argv = Vec::new();
-    for arg in env::args_os() {
-        argv.push(CString::new(arg.into_vec()).unwrap().into_raw());
-    }
-    argv.push(null_mut());
-    unsafe {
-        ARGC = argv.len();
-        ARGV = argv;
-        ENVP = environ;
-    }
+    // let mut argv = Vec::new();
+    // for arg in env::args_os() {
+    //     argv.push(CString::new(arg.into_vec()).unwrap().into_raw());
+    // }
+    // argv.push(null_mut());
+    // unsafe {
+    //     ARGC = argv.len();
+    //     ARGV = argv;
+    //     ENVP = environ;
+    // }
 }
 
 #[repr(C)]
@@ -292,18 +292,21 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, data: *mut c
         return 0;
     };
     let flags = OpenFlags::RTLD_NODELETE | OpenFlags::RTLD_GLOBAL;
-    let deps = Some(Arc::new(vec![lib.clone()].into_boxed_slice()));
+    let mut temp = Vec::new();
+    temp.push(lib.clone());
+    let deps = Some(Arc::new(temp.into_boxed_slice()));
     let start = lib.base();
     let end = start + lib.map_len();
     let shortname = lib.shortname();
     let name = if shortname.is_empty() {
-        unsafe {
-            (*addr_of!(PROGRAM_NAME))
-                .as_ref()
-                .unwrap()
-                .to_str()
-                .unwrap()
-        }
+        // unsafe {
+        //     (*addr_of!(PROGRAM_NAME))
+        //         .as_ref()
+        //         .unwrap()
+        //         .to_str()
+        //         .unwrap()
+        // }
+        ""
     } else {
         shortname
     };
@@ -328,8 +331,8 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, data: *mut c
 pub fn init() {
     ONCE.call_once(|| {
         init_argv();
-        let program_self = env::current_exe().unwrap();
-        unsafe { PROGRAM_NAME = Some(program_self) };
+        // let program_self = env::current_exe().unwrap();
+        // unsafe { PROGRAM_NAME = Some(program_self) };
         let debug = get_debug_struct();
         iterate_phdr(debug.map, |iter| {
             #[cfg(feature = "debug")]
