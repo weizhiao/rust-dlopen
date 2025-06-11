@@ -1,7 +1,12 @@
 use elf_loader::arch::{ElfPhdr, TLS_DTV_OFFSET};
+
+#[cfg(not(target_os = "macos"))]
+use libc::__errno_location;
+#[cfg(target_os = "macos")]
+use libc::__error as __errno_location;
+
 use libc::{
-    __errno_location, pthread_getspecific, pthread_key_create, pthread_key_delete, pthread_key_t,
-    pthread_setspecific,
+    pthread_getspecific, pthread_key_create, pthread_key_delete, pthread_key_t, pthread_setspecific,
 };
 use std::{
     alloc::{Layout, dealloc, handle_alloc_error},
