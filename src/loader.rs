@@ -166,13 +166,17 @@ fn from_impl(object: impl ElfObject, flags: OpenFlags) -> Result<ElfDylib> {
     let mut loader = Loader::<MmapImpl>::new();
     loader.set_hook(Box::new(parse_phdr));
     #[cfg(feature = "std")]
-    unsafe {
-        loader.set_init_params(
-            crate::init::ARGC,
-            (*core::ptr::addr_of!(crate::init::ARGV)).as_ptr() as usize,
-            crate::init::ENVP,
-        )
-    };
+    loader.set_init(Arc::new(|init, init_array| {
+        init.iter()
+            .chain(init_array.unwrap_or(&[]).iter())
+            .for_each(|init| unsafe {
+                core::mem::transmute::<_, &extern "C" fn(usize, usize, usize)>(init)(
+                    crate::init::ARGC,
+                    (*core::ptr::addr_of!(crate::init::ARGV)).as_ptr() as usize,
+                    crate::init::ENVP,
+                )
+            });
+    }));
     let lazy_bind = if flags.contains(OpenFlags::RTLD_LAZY) {
         Some(true)
     } else if flags.contains(OpenFlags::RTLD_NOW) {

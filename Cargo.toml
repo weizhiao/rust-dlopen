@@ -34,7 +34,7 @@ optional = true
 [dependencies.elf_loader]
 git = "https://github.com/weizhiao/rust-elfloader"
 default-features = false
-features = ["use-libc", "log"]
+features = ["log"]
 
 [dependencies.dynamic-loader-cache]
 version = "0.2.3"
@@ -53,9 +53,9 @@ default = ["mmap", "tls", "debug"]
 # enable this when you want to use gdb/lldb to debug the loaded dynamic libraries
 debug = ["std"]
 # enable std
-std = ["elf_loader/fs", "dep:dynamic-loader-cache"]
+std = ["dep:dynamic-loader-cache"]
 # enable default implementation on devices with mmapl storage
-mmap = ["std", "elf_loader/mmap"]
+mmap = ["std"]
 # enable this when you need to use thread loca
 tls = ["std", "dep:libc", "dep:thread-register"]
 # activate specific versions of symbols for dynamic library loading
