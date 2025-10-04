@@ -26,7 +26,7 @@ jobs:
     strategy:
       matrix:
         target: [ x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, riscv64gc-unknown-linux-gnu ]
-        channel: [ 1.85.0, stable ]
+        channel: [ 1.88.0, stable ]
         features: [ "tls,debug,version", "fs" ]
 
   test:
@@ -45,5 +45,5 @@ jobs:
     strategy:
       matrix:
         target: [ x86_64-unknown-linux-gnu ]
-        channel: [ 1.85.0, stable ]
+        channel: [ 1.88.0, stable ]
         features: [ "fs, tls, debug"]

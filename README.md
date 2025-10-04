@@ -2,7 +2,7 @@
 [![](https://img.shields.io/crates/d/dlopen-rs.svg)](https://crates.io/crates/dlopen-rs)
 [![license](https://img.shields.io/crates/l/dlopen-rs.svg)](https://crates.io/crates/dlopen-rs)
 [![dlopen-rs on docs.rs](https://docs.rs/dlopen-rs/badge.svg)](https://docs.rs/dlopen-rs)
-[![Rust](https://img.shields.io/badge/rust-1.85.0%2B-blue.svg?maxAge=3600)](https://github.com/weizhiao/dlopen_rs)
+[![Rust](https://img.shields.io/badge/rust-1.88.0%2B-blue.svg?maxAge=3600)](https://github.com/weizhiao/dlopen_rs)
 [![Build Status](https://github.com/weizhiao/dlopen-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/weizhiao/dlopen-rs/actions)
 # dlopen-rs
 
@@ -31,13 +31,13 @@ $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examp
 5. Allows repeated loading of the same dynamic library into memory. Using the `CUSTOM_NOT_REGISTER` flag in OpenFlags enables multiple coexisting copies of a library (identical or modified) in memory, facilitating runtime dynamic library `hot-swapping`.
 
 ## Feature
-| Feature | Default | Description                                                        |
-| ------- | ------- | ------------------------------------------------------------------ |
-| std     | Yes     | Enable `std`                                                       |
-| debug   | Yes     | Enable this to use gdb/lldb for debugging loaded dynamic libraries |
-| mmap    | Yes     | Enable default implementation on platforms with mmap               |
-| version | No      | Activate specific versions of symbols for dynamic library loading  |
-| tls     | Yes     | Enable this to use thread local storage.                           |
+| Feature  | Default | Description                                                        |
+| -------- | ------- | ------------------------------------------------------------------ |
+| debug    | Yes     | Enable this to use gdb/lldb for debugging loaded dynamic libraries |
+| fs       | Yes     | Enable this to use the file system.                                |
+| version  | No      | Activate specific versions of symbols for dynamic library loading  |
+| tls      | Yes     | Enable this to use thread local storage.                           |
+| use-ldso | No      | Enable this to work with the libc ld.so.                           |
 
 ## Architecture Support
 
@@ -83,12 +83,13 @@ fn main() {
 ```
 
 ## Minimum Supported Rust Version
-Rust 1.85 or higher.
+Rust 1.88 or higher.
 
 ## TODO
 * dlinfo have not been implemented yet. dlerror currently only returns NULL.  
 * RTLD_NEXT for dlsym has not been implemented.
 * When dlopen fails, the newly loaded dynamic library is destroyed, but the functions in .fini are not called.
+* Fix multi-threading bugs.
 
 ## Supplement
 If you encounter any issues during use, feel free to raise them on GitHub. We warmly welcome everyone to contribute code to help improve the functionality of dlopen-rs. 😊
