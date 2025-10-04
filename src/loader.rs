@@ -119,15 +119,26 @@ pub(crate) fn deal_unknown(
                 let tls_info = find_tls_info(symdef.lib);
                 unsafe {
                     ptr.write(
-                        symdef.sym.unwrap().st_value() + r_addend
-                            - tls_info.static_tls_offset.unwrap(),
+                        (symdef.sym.unwrap().st_value() + r_addend)
+                            .wrapping_sub(tls_info.static_tls_offset.unwrap()),
                     )
                 };
-				return Ok(());
+                return Ok(());
             }
         }
         _ => {}
     }
+    log::error!("Relocating dylib [{}] failed!", lib.name());
+    Err(Box::new(()))
+}
+
+#[cfg(not(feature = "tls"))]
+#[allow(unused)]
+pub(crate) fn deal_unknown(
+    rela: &ElfRela,
+    lib: &CoreComponent,
+    deps: &[&RelocatedDylib],
+) -> core::result::Result<(), Box<dyn Any + Send + Sync>> {
     log::error!("Relocating dylib [{}] failed!", lib.name());
     Err(Box::new(()))
 }
@@ -158,13 +169,21 @@ pub(crate) fn create_lazy_scope(
 fn from_impl(object: impl ElfObject, flags: OpenFlags) -> Result<ElfDylib> {
     let mut loader = Loader::<MmapImpl>::new();
     loader.set_hook(Box::new(parse_phdr));
-    #[cfg(feature = "fs")]
+    #[cfg(all(feature = "fs", feature = "use-ldso"))]
     unsafe {
-        loader.set_init_params(
-            crate::init::ARGC,
-            (*core::ptr::addr_of!(crate::init::ARGV)).as_ptr() as usize,
-            crate::init::ENVP,
-        )
+        loader.set_init(Arc::new(
+            |func: Option<fn()>, func_array: Option<&[fn()]>| {
+                func.iter()
+                    .chain(func_array.unwrap_or(&[]).iter())
+                    .for_each(|init| {
+                        core::mem::transmute::<_, &fn(usize, usize, usize)>(init)(
+                            crate::init::ARGC,
+                            (*core::ptr::addr_of!(crate::init::ARGV)).as_ptr() as usize,
+                            crate::init::ENVP,
+                        )
+                    });
+            },
+        ))
     };
     let lazy_bind = if flags.contains(OpenFlags::RTLD_LAZY) {
         Some(true)

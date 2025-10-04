@@ -1,6 +1,5 @@
 use crate::{
-    ElfLibrary,
-    init::LinkMap,
+    ElfLibrary, LinkMap,
     loader::{EH_FRAME_ID, EhFrame},
     register::MANAGER,
 };

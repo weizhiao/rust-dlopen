@@ -1,7 +1,8 @@
+use crate::LinkMap;
 use alloc::boxed::Box;
 use spin::Mutex;
 
-use crate::init::{GDBDebug, LinkMap};
+use crate::init::GDBDebug;
 use core::{
     ffi::{CStr, c_char, c_int},
     ptr::null_mut,

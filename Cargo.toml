@@ -25,33 +25,24 @@ features = ["rwlock", "lazy", "mutex", "spin_mutex"]
 version = '2.9.0'
 
 [dependencies.elf_loader]
-git = "https://github.com/weizhiao/rust-elfloader"
+version = "0.13.0"
 default-features = false
-features = ["use-libc", "log"]
-
-[dependencies.dynamic-loader-cache]
-version = "0.2.3"
-optional = true
-
-[dependencies.thread-register]
-git = "https://github.com/weizhiao/thread-register.git"
-optional = true
+features = ["use-syscall", "log"]
 
 [dependencies]
 bitflags = "2.6.0"
 log = "0.4.22"
+syscalls = "0.7.0"
 
 [features]
-default = ["mmap", "debug", "use-ldso"]
+default = ["fs", "debug"]
 use-ldso = ["tls"]
 # enable this when you want to use gdb/lldb to debug the loaded dynamic libraries
-debug = []
+debug = ["use-ldso"]
 # enable std
-fs = ["elf_loader/fs", "dep:dynamic-loader-cache"]
-# enable default implementation on devices with mmapl storage
-mmap = ["fs", "elf_loader/mmap"]
+fs = []
 # enable this when you need to use thread loca
-tls = ["dep:thread-register"]
+tls = []
 # activate specific versions of symbols for dynamic library loading
 version = ["elf_loader/version"]
 
@@ -64,22 +55,22 @@ libc = "0.2.149"
 [[bench]]
 name = "dlopen"
 harness = false
-required-features = ["mmap", "tls"]
+required-features = ["fs", "tls"]
 
 [[bench]]
 name = "dlopen_llvm"
 harness = false
-required-features = ["mmap", "tls"]
+required-features = ["fs", "tls"]
 
 [[bench]]
 name = "dlsym"
 harness = false
-required-features = ["mmap", "tls"]
+required-features = ["fs", "tls"]
 
 [[bench]]
 name = "dl_iterate_phdr"
 harness = false
-required-features = ["mmap", "tls"]
+required-features = ["fs", "tls"]
 
 [[example]]
 name = "dlopen"

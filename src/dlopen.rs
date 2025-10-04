@@ -20,12 +20,12 @@ use elf_loader::{
 use spin::Lazy;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct ElfPath {
+pub(crate) struct ElfPath {
     path: String,
 }
 
 impl ElfPath {
-    fn from_str(path: &str) -> Result<Self> {
+    pub(crate) fn from_str(path: &str) -> Result<Self> {
         Ok(ElfPath {
             path: path.to_owned(),
         })
@@ -303,22 +303,19 @@ where
 }
 
 static LD_LIBRARY_PATH: Lazy<Box<[ElfPath]>> = Lazy::new(|| {
-    // #[cfg(feature = "std")]
-    // {
-    //     let library_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-    //     deal_path(&library_path)
-    // }
-    // #[cfg(not(feature = "std"))]
+    //TODO
     Box::new([])
 });
 static DEFAULT_PATH: spin::Lazy<Box<[ElfPath]>> = Lazy::new(|| unsafe {
-    let v = vec![
-        ElfPath::from_str("/usr/lib").unwrap_unchecked(),
-        ElfPath::from_str("/usr/lib").unwrap_unchecked(),
-    ];
+    let v = vec![ElfPath::from_str("/usr/lib").unwrap_unchecked()];
     v.into_boxed_slice()
 });
-static LD_CACHE: Lazy<Box<[ElfPath]>> = Lazy::new(build_ld_cache);
+static LD_CACHE: Lazy<Box<[ElfPath]>> = Lazy::new(|| {
+    #[cfg(feature = "fs")]
+    return crate::cache::build_ld_cache().unwrap();
+    #[cfg(not(feature = "fs"))]
+    Box::new([])
+});
 
 #[inline]
 fn fixup_rpath(lib_path: &str, rpath: &str) -> Box<[ElfPath]> {
@@ -368,56 +365,6 @@ fn find_library(
     }
     Err(find_lib_error(format!("can not find file: {}", lib_name)))
 }
-
-#[cfg(feature = "fs")]
-mod imp {
-    use super::ElfPath;
-    use alloc::boxed::Box;
-    #[inline]
-    pub(super) fn build_ld_cache() -> Box<[ElfPath]> {
-        // LdCache::load()
-        //     .and_then(|cache| {
-        //         Ok(Vec::from_iter(
-        //             cache
-        //                 .iter()?
-        //                 .filter_map(LdResult::ok)
-        //                 .map(|entry| {
-        //                     // Since the `full_path` is always a file, we can always unwrap it
-        //                     ElfPath::from_str(
-        //                         entry
-        //                             .full_path
-        //                             .parent()
-        //                             .unwrap()
-        //                             .to_owned()
-        //                             .to_str()
-        //                             .unwrap(),
-        //                     )
-        //                     .unwrap()
-        //                 })
-        //                 .collect::<HashSet<_>>(),
-        //         )
-        //         .into_boxed_slice())
-        //     })
-        //     .unwrap_or_else(|err| {
-        //         log::warn!("Build ld cache failed: {}", err);
-        //         Box::new([])
-        //     })
-        Box::new([])
-    }
-}
-
-#[cfg(not(feature = "fs"))]
-mod imp {
-    use alloc::boxed::Box;
-
-    use super::ElfPath;
-    #[inline]
-    pub(super) fn build_ld_cache() -> Box<[ElfPath]> {
-        Box::new([])
-    }
-}
-
-use imp::build_ld_cache;
 
 /// # Safety
 /// It is the same as `dlopen`.

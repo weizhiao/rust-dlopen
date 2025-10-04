@@ -1,3 +1,5 @@
+use crate::LinkMap;
+use crate::arch::{ModifyRegister, ThreadRegister};
 use crate::tls::{
     DTV_OFFSET, TLS_GENERATION, TLS_STATIC_ALIGN, TLS_STATIC_SIZE, TlsState, add_tls, init_tls,
 };
@@ -24,16 +26,6 @@ use elf_loader::{
     set_global_scope,
 };
 use spin::Once;
-use thread_register::{ModifyRegister, ThreadRegister};
-
-#[repr(C)]
-pub(crate) struct LinkMap {
-    pub l_addr: *mut c_void,
-    pub l_name: *const c_char,
-    pub l_ld: *mut Dyn,
-    pub l_next: *mut LinkMap,
-    pub l_prev: *mut LinkMap,
-}
 
 #[repr(C)]
 pub(crate) struct GDBDebug {
@@ -69,10 +61,6 @@ static ONCE: Once = Once::new();
 pub(crate) static mut ARGC: usize = 0;
 pub(crate) static mut ARGV: Vec<*mut c_char> = Vec::new();
 pub(crate) static mut ENVP: usize = 0;
-
-unsafe extern "C" {
-    static environ: usize;
-}
 
 fn create_segments(base: usize, len: usize) -> Option<ElfSegments> {
     let memory = if let Some(memory) = NonNull::new(base as _) {

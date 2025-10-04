@@ -12,7 +12,8 @@ use core::{
 };
 use elf_loader::{UserData, arch::ElfPhdr, segment::ElfSegments};
 use spin::Lazy;
-use thread_register::{ModifyRegister, ThreadRegister};
+
+use crate::arch::{ModifyRegister, ThreadRegister};
 
 #[repr(C)]
 pub(crate) struct TlsIndex {

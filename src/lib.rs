@@ -43,6 +43,9 @@
 extern crate alloc;
 
 pub mod abi;
+mod arch;
+#[cfg(feature = "fs")]
+mod cache;
 #[cfg(feature = "debug")]
 mod debug;
 mod dl_iterate_phdr;
@@ -61,7 +64,12 @@ use alloc::{
     string::{String, ToString},
 };
 use bitflags::bitflags;
-use core::{any::Any, fmt::Display};
+use core::{
+    any::Any,
+    ffi::{c_char, c_void},
+    fmt::Display,
+};
+use elf_loader::arch::Dyn;
 
 pub use elf_loader::{Symbol, mmap::Mmap};
 #[cfg(feature = "use-ldso")]
@@ -113,6 +121,8 @@ pub enum Error {
     FindSymbolError { msg: String },
     /// Returned when failed to iterate phdr.
     IteratorPhdrError { err: Box<dyn Any> },
+    /// Returned when failed to parse ld.so.cache.
+    ParseLdCacheError { msg: String },
 }
 
 impl Display for Error {
@@ -122,6 +132,7 @@ impl Display for Error {
             Error::FindLibError { msg } => write!(f, "{msg}"),
             Error::FindSymbolError { msg } => write!(f, "{msg}"),
             Error::IteratorPhdrError { err } => write!(f, "{:?}", err),
+            Error::ParseLdCacheError { msg } => write!(f, "{msg}"),
         }
     }
 }
@@ -147,6 +158,23 @@ fn find_symbol_error(msg: impl ToString) -> Error {
     Error::FindSymbolError {
         msg: msg.to_string(),
     }
+}
+
+#[cold]
+#[inline(never)]
+fn parse_ld_cache_error(msg: impl ToString) -> Error {
+    Error::ParseLdCacheError {
+        msg: msg.to_string(),
+    }
+}
+
+#[repr(C)]
+pub(crate) struct LinkMap {
+    pub l_addr: *mut c_void,
+    pub l_name: *const c_char,
+    pub l_ld: *mut Dyn,
+    pub l_next: *mut LinkMap,
+    pub l_prev: *mut LinkMap,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
