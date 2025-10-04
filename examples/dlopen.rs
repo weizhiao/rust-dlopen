@@ -6,8 +6,11 @@ fn main() {
     env_logger::init();
     dlopen_rs::init();
     let path = Path::new("./target/release/libexample.so");
-    let libexample1 =
-        ElfLibrary::dlopen(path, OpenFlags::CUSTOM_NOT_REGISTER | OpenFlags::RTLD_LAZY).unwrap();
+    let libexample1 = ElfLibrary::dlopen(
+        path.as_os_str().to_str().unwrap(),
+        OpenFlags::CUSTOM_NOT_REGISTER | OpenFlags::RTLD_LAZY,
+    )
+    .unwrap();
     let add = unsafe { libexample1.get::<fn(i32, i32) -> i32>("add").unwrap() };
     println!("{}", add(1, 1));
 
@@ -30,8 +33,11 @@ fn main() {
     let backtrace = unsafe { libexample2.get::<fn()>("backtrace").unwrap() };
     backtrace();
 
-	let panic = unsafe { libexample2.get::<fn()>("panic").unwrap() };
-	panic();
+    let panic = unsafe { libexample2.get::<fn()>("panic").unwrap() };
+    panic();
+
+    let thread_local = unsafe { libexample2.get::<fn()>("thread_local").unwrap() };
+    thread_local();
 
     let dl_info = ElfLibrary::dladdr(backtrace.into_raw() as usize).unwrap();
     println!("{:?}", dl_info);

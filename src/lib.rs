@@ -25,7 +25,6 @@
 //!     println!("{}", add(1,1));
 //! }
 //! ```
-#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::type_complexity)]
 #![warn(
     clippy::unnecessary_lazy_evaluations,
@@ -39,10 +38,14 @@
     clippy::redundant_else,
     clippy::redundant_static_lifetimes
 )]
+#![no_std]
 
 extern crate alloc;
 
 pub mod abi;
+mod arch;
+#[cfg(feature = "fs")]
+mod cache;
 #[cfg(feature = "debug")]
 mod debug;
 mod dl_iterate_phdr;
@@ -50,7 +53,7 @@ mod dladdr;
 mod dlopen;
 mod dlsym;
 mod find;
-#[cfg(feature = "std")]
+#[cfg(feature = "use-ldso")]
 mod init;
 mod loader;
 mod register;
@@ -61,10 +64,15 @@ use alloc::{
     string::{String, ToString},
 };
 use bitflags::bitflags;
-use core::{any::Any, fmt::Display};
+use core::{
+    any::Any,
+    ffi::{c_char, c_void},
+    fmt::Display,
+};
+use elf_loader::arch::Dyn;
 
 pub use elf_loader::{Symbol, mmap::Mmap};
-#[cfg(feature = "std")]
+#[cfg(feature = "use-ldso")]
 pub use init::init;
 pub use loader::{Builder, ElfLibrary};
 
@@ -105,9 +113,6 @@ bitflags! {
 /// dlopen-rs error type
 #[derive(Debug)]
 pub enum Error {
-    /// Returned when encountered an io error.
-    #[cfg(feature = "std")]
-    IOError { err: std::io::Error },
     /// Returned when encountered a loader error.
     LoaderError { err: elf_loader::Error },
     /// Returned when failed to find a library.
@@ -116,27 +121,18 @@ pub enum Error {
     FindSymbolError { msg: String },
     /// Returned when failed to iterate phdr.
     IteratorPhdrError { err: Box<dyn Any> },
+    /// Returned when failed to parse ld.so.cache.
+    ParseLdCacheError { msg: String },
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            #[cfg(feature = "std")]
-            Error::IOError { err } => write!(f, "{err}"),
             Error::LoaderError { err } => write!(f, "{err}"),
             Error::FindLibError { msg } => write!(f, "{msg}"),
             Error::FindSymbolError { msg } => write!(f, "{msg}"),
             Error::IteratorPhdrError { err } => write!(f, "{:?}", err),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::IOError { err } => Some(err),
-            _ => None,
+            Error::ParseLdCacheError { msg } => write!(f, "{msg}"),
         }
     }
 }
@@ -145,14 +141,6 @@ impl From<elf_loader::Error> for Error {
     #[cold]
     fn from(value: elf_loader::Error) -> Self {
         Error::LoaderError { err: value }
-    }
-}
-
-#[cfg(feature = "std")]
-impl From<std::io::Error> for Error {
-    #[cold]
-    fn from(value: std::io::Error) -> Self {
-        Error::IOError { err: value }
     }
 }
 
@@ -170,6 +158,23 @@ fn find_symbol_error(msg: impl ToString) -> Error {
     Error::FindSymbolError {
         msg: msg.to_string(),
     }
+}
+
+#[cold]
+#[inline(never)]
+fn parse_ld_cache_error(msg: impl ToString) -> Error {
+    Error::ParseLdCacheError {
+        msg: msg.to_string(),
+    }
+}
+
+#[repr(C)]
+pub(crate) struct LinkMap {
+    pub l_addr: *mut c_void,
+    pub l_name: *const c_char,
+    pub l_ld: *mut Dyn,
+    pub l_next: *mut LinkMap,
+    pub l_prev: *mut LinkMap,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
