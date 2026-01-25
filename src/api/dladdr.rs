@@ -1,4 +1,4 @@
-use crate::{ElfLibrary, find::addr2dso};
+use crate::{ElfLibrary, core_impl::find::addr2dso};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     fmt::Debug,
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn dladdr(addr: *const c_void, info: *mut CDlinfo) -> c_in
     if let Some(dl_info) = ElfLibrary::dladdr(addr as usize) {
         let info = unsafe { &mut *info };
         info.dli_fbase = dl_info.dylib().base() as _;
-        info.dli_fname = dl_info.dylib().cname().as_ptr();
+        info.dli_fname = dl_info.dylib().name().as_ptr() as _;
         info.dli_saddr = dl_info.symbol_addr().unwrap_or(0) as _;
         info.dli_sname = dl_info.sname.map_or(null(), |s| s.as_ptr());
         1

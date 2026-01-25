@@ -1,10 +1,10 @@
-use crate::{ElfLibrary, Error, Result, register::MANAGER};
+use crate::{ElfLibrary, Error, Result, core_impl::register::MANAGER};
 use alloc::boxed::Box;
 use core::{
-    ffi::{CStr, c_char, c_int, c_ulonglong, c_void},
+    ffi::{c_char, c_int, c_ulonglong, c_void},
     ptr::null_mut,
 };
-use elf_loader::arch::ElfPhdr;
+use elf_loader::elf::ElfPhdr;
 
 /// same as dl_phdr_info in libc
 #[repr(C)]
@@ -21,7 +21,7 @@ pub struct CDlPhdrInfo {
 
 pub struct DlPhdrInfo<'lib> {
     lib_base: usize,
-    lib_name: &'lib CStr,
+    lib_name: *const c_char,
     phdrs: &'lib [ElfPhdr],
     dlpi_adds: c_ulonglong,
     dlpi_subs: c_ulonglong,
@@ -33,12 +33,16 @@ impl DlPhdrInfo<'_> {
     /// Get the name of the dynamic library.
     #[inline]
     pub fn name(&self) -> &str {
-        self.lib_name.to_str().unwrap()
+        if self.lib_name.is_null() {
+            ""
+        } else {
+            unsafe { core::ffi::CStr::from_ptr(self.lib_name).to_str().unwrap() }
+        }
     }
 
     /// Get the C-style name of the dynamic library.
     #[inline]
-    pub fn cname(&self) -> &CStr {
+    pub fn cname(&self) -> *const c_char {
         self.lib_name
     }
 
@@ -61,15 +65,20 @@ impl ElfLibrary {
     where
         F: FnMut(&DlPhdrInfo) -> Result<()>,
     {
-        let reader = MANAGER.read();
+        let reader = crate::lock_read!(MANAGER);
         for lib in reader.all.values() {
-            let phdrs = lib.relocated_dylib_ref().phdrs();
+            let user_data = lib.relocated_dylib_ref().user_data();
+            let phdrs = lib.relocated_dylib_ref().phdrs().unwrap_or(&[]);
             if phdrs.is_empty() {
                 continue;
             }
             let info = DlPhdrInfo {
                 lib_base: lib.relocated_dylib_ref().base(),
-                lib_name: lib.relocated_dylib_ref().cname(),
+                lib_name: user_data
+                    .c_name
+                    .as_ref()
+                    .map(|n| n.as_ptr())
+                    .unwrap_or(core::ptr::null()),
                 phdrs,
                 dlpi_adds: reader.all.len() as _,
                 dlpi_subs: 0,
@@ -93,7 +102,7 @@ pub unsafe extern "C" fn dl_iterate_phdr(callback: Option<CallBack>, data: *mut 
         if let Some(callback) = callback {
             let mut c_info = CDlPhdrInfo {
                 dlpi_addr: info.lib_base,
-                dlpi_name: info.lib_name.as_ptr(),
+                dlpi_name: info.lib_name,
                 dlpi_phdr: info.phdrs.as_ptr(),
                 dlpi_phnum: info.phdrs.len() as _,
                 dlpi_adds: info.dlpi_adds,

@@ -12,11 +12,10 @@
 //! # Examples
 //! ```no_run
 //! # use dlopen_rs::{ElfLibrary, OpenFlags};
-//! use std::path::Path;
 //!
 //! fn main(){
 //!     dlopen_rs::init();
-//!     let path = Path::new("./target/release/libexample.so");
+//!     let path = "./target/release/libexample.so";
 //!     let libexample = ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL | OpenFlags::RTLD_LAZY).unwrap();
 //!
 //!     let add = unsafe {
@@ -42,39 +41,18 @@
 
 extern crate alloc;
 
-pub mod abi;
+pub mod api;
 mod arch;
-#[cfg(feature = "fs")]
-mod cache;
-#[cfg(feature = "debug")]
-mod debug;
-mod dl_iterate_phdr;
-mod dladdr;
-mod dlopen;
-mod dlsym;
-mod find;
-#[cfg(feature = "use-ldso")]
-mod init;
-mod loader;
-mod register;
-#[cfg(feature = "tls")]
-mod tls;
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-};
-use bitflags::bitflags;
-use core::{
-    any::Any,
-    ffi::{c_char, c_void},
-    fmt::Display,
-};
-use elf_loader::arch::Dyn;
+mod core_impl;
+mod error;
+mod utils;
 
-pub use elf_loader::{Symbol, mmap::Mmap};
-#[cfg(feature = "use-ldso")]
-pub use init::init;
-pub use loader::{Builder, ElfLibrary};
+use bitflags::bitflags;
+
+pub use crate::core_impl::init::init;
+pub use crate::core_impl::loader::ElfLibrary;
+pub use crate::error::Error;
+pub use elf_loader::{image::Symbol, os::Mmap};
 
 #[cfg(not(any(
     target_arch = "x86_64",
@@ -84,97 +62,26 @@ pub use loader::{Builder, ElfLibrary};
 compile_error!("unsupport arch");
 
 bitflags! {
-    /// Control how dynamic libraries are loaded.
+    /// Flags that control how dynamic libraries are loaded and resolved.
     #[derive(Clone, Copy, Debug)]
     pub struct OpenFlags:u32{
-        /// This is the converse of RTLD_GLOBAL, and the default if neither flag is specified.
-        /// Symbols defined in this shared object are not made available to resolve references in subsequently loaded shared objects.
+        /// Symbols in this library are not made available to resolve references in subsequently loaded libraries.
         const RTLD_LOCAL = 0;
-        /// Perform lazy binding. Resolve symbols only as the code that references them is executed.
-        /// If the symbol is never referenced, then it is never resolved.
+        /// Perform lazy binding: resolve symbols only as they are executed.
         const RTLD_LAZY = 1;
-        /// If this value is specified, or the environment variable LD_BIND_NOW is set to a nonempty string,
-        /// all undefined symbols in the shared object are resolved before dlopen() returns.
-        const RTLD_NOW= 2;
-        /// Not supported
+        /// Resolve all symbols before `dlopen` returns.
+        const RTLD_NOW = 2;
+        /// Not supported.
         const RTLD_NOLOAD = 4;
-        /// Not supported
-        const RTLD_DEEPBIND =8;
-        /// The symbols defined by this shared object will be made available for symbol resolution of subsequently loaded shared objects.
+        /// Prefer the search scope of this library over the global scope for symbol resolution.
+        const RTLD_DEEPBIND = 8;
+        /// Make symbols in this library available for symbol resolution in subsequently loaded libraries.
         const RTLD_GLOBAL = 256;
-        /// Do not unload the shared object during dlclose(). Consequently,
-        /// the object's static and global variables are not reinitialized if the object is reloaded with dlopen() at a later time.
+        /// Do not unload the library during `dlclose`.
         const RTLD_NODELETE = 4096;
-        /// dlopen-rs custom flag, true local loading, does not involve any global variable operations, no lock, and has the fastest loading speed.
+        /// dlopen-rs custom flag: fast local loading that bypasses the global registry and locking.
         const CUSTOM_NOT_REGISTER = 1024;
     }
-}
-
-/// dlopen-rs error type
-#[derive(Debug)]
-pub enum Error {
-    /// Returned when encountered a loader error.
-    LoaderError { err: elf_loader::Error },
-    /// Returned when failed to find a library.
-    FindLibError { msg: String },
-    /// Returned when failed to find a symbol.
-    FindSymbolError { msg: String },
-    /// Returned when failed to iterate phdr.
-    IteratorPhdrError { err: Box<dyn Any> },
-    /// Returned when failed to parse ld.so.cache.
-    ParseLdCacheError { msg: String },
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Error::LoaderError { err } => write!(f, "{err}"),
-            Error::FindLibError { msg } => write!(f, "{msg}"),
-            Error::FindSymbolError { msg } => write!(f, "{msg}"),
-            Error::IteratorPhdrError { err } => write!(f, "{:?}", err),
-            Error::ParseLdCacheError { msg } => write!(f, "{msg}"),
-        }
-    }
-}
-
-impl From<elf_loader::Error> for Error {
-    #[cold]
-    fn from(value: elf_loader::Error) -> Self {
-        Error::LoaderError { err: value }
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn find_lib_error(msg: impl ToString) -> Error {
-    Error::FindLibError {
-        msg: msg.to_string(),
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn find_symbol_error(msg: impl ToString) -> Error {
-    Error::FindSymbolError {
-        msg: msg.to_string(),
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn parse_ld_cache_error(msg: impl ToString) -> Error {
-    Error::ParseLdCacheError {
-        msg: msg.to_string(),
-    }
-}
-
-#[repr(C)]
-pub(crate) struct LinkMap {
-    pub l_addr: *mut c_void,
-    pub l_name: *const c_char,
-    pub l_ld: *mut Dyn,
-    pub l_next: *mut LinkMap,
-    pub l_prev: *mut LinkMap,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

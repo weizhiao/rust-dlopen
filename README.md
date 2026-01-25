@@ -31,22 +31,18 @@ $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examp
 5. Allows repeated loading of the same dynamic library into memory. Using the `CUSTOM_NOT_REGISTER` flag in OpenFlags enables multiple coexisting copies of a library (identical or modified) in memory, facilitating runtime dynamic library `hot-swapping`.
 
 ## Feature
-| Feature  | Default | Description                                                        |
-| -------- | ------- | ------------------------------------------------------------------ |
-| debug    | Yes     | Enable this to use gdb/lldb for debugging loaded dynamic libraries |
-| fs       | Yes     | Enable this to use the file system.                                |
-| version  | No      | Activate specific versions of symbols for dynamic library loading  |
-| tls      | Yes     | Enable this to use thread local storage.                           |
-| use-ldso | No      | Enable this to work with the libc ld.so.                           |
+| Feature | Default | Description                                                       |
+| ------- | ------- | ----------------------------------------------------------------- |
+| fs      | Yes     | Enable this to use the file system.                               |
+| version | No      | Activate specific versions of symbols for dynamic library loading |
 
 ## Architecture Support
 
-| Arch        | Support | Lazy Binding | Test      |
-| ----------- | ------- | ------------ | --------- |
-| x86_64      | ✅       | ✅            | ✅(CI)     |
-| aarch64     | ✅       | ✅            | ✅(Manual) |
-| riscv64     | ✅       | ✅            | ✅(Manual) |
-| loongarch64 | ✅       | ❌            | ❌         |
+| Arch    | Support | Lazy Binding | Test      |
+| ------- | ------- | ------------ | --------- |
+| x86_64  | ✅       | ✅            | ✅(CI)     |
+| aarch64 | ✅       | ✅            | ✅(Manual) |
+| riscv64 | ✅       | ✅            | ✅(Manual) |
 
 ## Examples
 

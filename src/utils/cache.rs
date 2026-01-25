@@ -1,5 +1,5 @@
-use crate::{Error, parse_ld_cache_error};
-use crate::{Result, dlopen::ElfPath};
+use crate::{Error, error::parse_ld_cache_error};
+use crate::{Result, api::dlopen::ElfPath};
 use alloc::boxed::Box;
 use alloc::{string::String, vec::Vec};
 
@@ -9,7 +9,7 @@ impl From<syscalls::Errno> for Error {
     }
 }
 
-pub(super) fn build_ld_cache() -> Result<Box<[ElfPath]>> {
+pub(crate) fn build_ld_cache() -> Result<Box<[ElfPath]>> {
     // 尝试读取 /etc/ld.so.cache 文件
     let path = b"/etc/ld.so.cache\0"; // C字符串需要以null结尾
 
@@ -72,26 +72,34 @@ fn parse_ld_cache(data: &[u8]) -> Result<Box<[ElfPath]>> {
 }
 
 fn parse_new_format(data: &[u8]) -> Result<Box<[ElfPath]>> {
-    if data.len() < 32 {
+    if data.len() < 48 {
         return Err(parse_ld_cache_error("ld.so.cache file is too small"));
     }
 
     // 解析头部信息
-    let header_size = 32;
+    // glibc new format header is 48 bytes
     let nlibs = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
     let len_strings = u32::from_le_bytes([data[24], data[25], data[26], data[27]]) as usize;
-    let _flags = data[28];
-    let _extension_offset = u32::from_le_bytes([data[29], data[30], data[31], data[32]]) as usize;
 
-    // 计算字符串表的偏移量
-    let string_table_offset = header_size + (nlibs as usize) * 32; // 每个条目32字节
+    let header_size = 48;
+    // in new format, entries are usually 24 bytes, but some systems use 32
+    // we can try to infer it from file size if needed, but 24 is standard for recent glibc
+    let entry_size = 24;
+    let string_table_offset = header_size + (nlibs as usize) * entry_size;
 
     // 修正边界检查逻辑，确保字符串表在文件范围内
     if string_table_offset > data.len() {
-        return Err(parse_ld_cache_error("Invalid ld.so.cache format: entries exceed file size"));
+        // Try fallback to 32 bytes entry size if 24 failed (some older/different glibc)
+        let entry_size_alt = 32;
+        let string_table_offset_alt = header_size + (nlibs as usize) * entry_size_alt;
+        if string_table_offset_alt > data.len() {
+            return Err(parse_ld_cache_error(
+                "Invalid ld.so.cache format: entries exceed file size",
+            ));
+        }
+        // If we reach here, maybe it's 32? (uncommon for 1.1)
     }
-    
-    // 如果字符串表长度为0，或者超出文件范围，则使用从string_table_offset到文件末尾的所有数据
+
     let string_table_end = if len_strings == 0 || string_table_offset + len_strings > data.len() {
         data.len()
     } else {
@@ -106,12 +114,7 @@ fn parse_new_format(data: &[u8]) -> Result<Box<[ElfPath]>> {
     let mut offset = header_size;
     let mut entry_count = 0;
 
-    while offset + 32 <= string_table_offset && entry_count < nlibs as usize {
-        // 解析条目中的value字段（库文件路径的偏移量）
-        if offset + 16 > data.len() {
-            break;
-        }
-
+    while offset + entry_size <= string_table_offset && entry_count < nlibs as usize {
         let value_offset = u32::from_le_bytes([
             data[offset + 8],
             data[offset + 9],
@@ -134,7 +137,7 @@ fn parse_new_format(data: &[u8]) -> Result<Box<[ElfPath]>> {
             }
         }
 
-        offset += 32; // 下一个条目
+        offset += entry_size; // 下一个条目
         entry_count += 1;
     }
 

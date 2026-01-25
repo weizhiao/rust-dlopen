@@ -25,7 +25,7 @@ features = ["rwlock", "lazy", "mutex", "spin_mutex"]
 version = '2.9.0'
 
 [dependencies.elf_loader]
-version = "0.13.0"
+git = "https://github.com/weizhiao/Relink.git"
 default-features = false
 features = ["use-syscall", "log"]
 
@@ -35,14 +35,9 @@ log = "0.4.22"
 syscalls = "0.7.0"
 
 [features]
-default = ["fs", "debug"]
-use-ldso = ["tls"]
-# enable this when you want to use gdb/lldb to debug the loaded dynamic libraries
-debug = ["use-ldso"]
+default = ["fs"]
 # enable std
 fs = []
-# enable this when you need to use thread loca
-tls = []
 # activate specific versions of symbols for dynamic library loading
 version = ["elf_loader/version"]
 
@@ -55,23 +50,23 @@ libc = "0.2.149"
 [[bench]]
 name = "dlopen"
 harness = false
-required-features = ["fs", "tls"]
+required-features = ["fs"]
 
 [[bench]]
 name = "dlopen_llvm"
 harness = false
-required-features = ["fs", "tls"]
+required-features = ["fs"]
 
 [[bench]]
 name = "dlsym"
 harness = false
-required-features = ["fs", "tls"]
+required-features = ["fs"]
 
 [[bench]]
 name = "dl_iterate_phdr"
 harness = false
-required-features = ["fs", "tls"]
+required-features = ["fs"]
 
 [[example]]
 name = "dlopen"
-required-features = ["tls"]
+required-features = ["fs"]
