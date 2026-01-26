@@ -1,55 +1,11 @@
-use crate::{Error, error::parse_ld_cache_error};
+use crate::error::parse_ld_cache_error;
 use crate::{Result, api::dlopen::ElfPath};
 use alloc::boxed::Box;
 use alloc::{string::String, vec::Vec};
 
-impl From<syscalls::Errno> for Error {
-    fn from(value: syscalls::Errno) -> Self {
-        parse_ld_cache_error(value)
-    }
-}
-
 pub(crate) fn build_ld_cache() -> Result<Box<[ElfPath]>> {
     // 尝试读取 /etc/ld.so.cache 文件
-    let path = b"/etc/ld.so.cache\0"; // C字符串需要以null结尾
-
-    const O_RDONLY: usize = 0;
-    // 使用系统调用打开文件
-    let fd =
-        unsafe { syscalls::syscall2(syscalls::Sysno::open, path.as_ptr() as usize, O_RDONLY)? };
-
-    const SEEK_END: usize = 2;
-    const SEEK_SET: usize = 0;
-    // 获取文件大小
-    let file_size =
-        unsafe { syscalls::syscall3(syscalls::Sysno::lseek, fd as usize, 0, SEEK_END)? };
-
-    // 重置文件指针到开头
-    unsafe { syscalls::syscall3(syscalls::Sysno::lseek, fd as usize, 0, SEEK_SET)? };
-
-    // 分配内存并读取文件内容
-    let mut buffer = Vec::with_capacity(file_size);
-    unsafe {
-        buffer.set_len(file_size);
-    }
-
-    let bytes_read = unsafe {
-        syscalls::syscall3(
-            syscalls::Sysno::read,
-            fd as usize,
-            buffer.as_mut_ptr() as usize,
-            file_size,
-        )?
-    };
-
-    // 关闭文件
-    unsafe { syscalls::syscall1(syscalls::Sysno::close, fd as usize)? };
-
-    if bytes_read != file_size {
-        return Err(parse_ld_cache_error(
-            "Failed to read complete ld.so.cache file",
-        ));
-    }
+    let buffer = crate::os::read_file("/etc/ld.so.cache")?;
 
     // 解析 ld.so.cache 内容
     parse_ld_cache(&buffer)

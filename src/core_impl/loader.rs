@@ -1,6 +1,6 @@
+use crate::core_impl::types::{ARGC, ARGV, ENVP, LinkMap, UserData};
 use crate::utils::debug::add_debug_link_map;
 use crate::{OpenFlags, Result, error::find_symbol_error};
-use crate::core_impl::types::{ARGC, ARGV, ENVP, LinkMap, UserData};
 use alloc::{
     boxed::Box,
     ffi::CString,
@@ -13,6 +13,7 @@ use core::{
     ffi::{c_char, c_int},
     fmt::Debug,
 };
+use elf_loader::input::ElfFile;
 use elf_loader::{
     Loader,
     elf::{ElfDyn, ElfPhdr, abi::PT_DYNAMIC},
@@ -25,7 +26,7 @@ pub(crate) type RelocatedDylib = LoadedCore<UserData>;
 pub(crate) type CoreComponentRef = ElfCoreRef<UserData>;
 
 /// Searches for a symbol in a list of relocated libraries.
-/// 
+///
 /// Iterates through the provided libraries in order and returns the first matching symbol.
 #[inline]
 pub(crate) fn find_symbol<'lib, T>(
@@ -39,9 +40,9 @@ pub(crate) fn find_symbol<'lib, T>(
 }
 
 /// Creates a closure for lazy symbol resolution.
-/// 
-/// The closure captures weak references to the library's dependencies and uses them 
-/// to resolve symbols at runtime. It respects the `RTLD_DEEPBIND` flag to determine 
+///
+/// The closure captures weak references to the library's dependencies and uses them
+/// to resolve symbols at runtime. It respects the `RTLD_DEEPBIND` flag to determine
 /// the search order between the local dependency scope and the global scope.
 #[inline]
 pub(crate) fn create_lazy_scope(
@@ -145,8 +146,8 @@ where
 }
 
 /// Represents a successfully loaded and relocated dynamic library.
-/// 
-/// This is the primary interface for interacting with a loaded library, 
+///
+/// This is the primary interface for interacting with a loaded library,
 /// providing methods to look up symbols and inspect metadata.
 #[derive(Clone)]
 pub struct ElfLibrary {
@@ -167,11 +168,8 @@ impl Debug for ElfLibrary {
 
 impl ElfLibrary {
     /// Find and load a elf dynamic library from path.
-    #[cfg(feature = "fs")]
     #[inline]
     pub(crate) fn from_file(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfDylib> {
-        use elf_loader::input::ElfFile;
-
         let file = ElfFile::from_path(path.as_ref())?;
         from_impl(file, flags)
     }

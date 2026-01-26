@@ -45,6 +45,7 @@ pub mod api;
 mod arch;
 mod core_impl;
 mod error;
+mod os;
 mod utils;
 
 use bitflags::bitflags;

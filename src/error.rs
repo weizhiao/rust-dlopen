@@ -19,6 +19,8 @@ pub enum Error {
     ParseLdCacheError { msg: String },
     /// The provided path is invalid.
     InvalidPath,
+    /// The operation is not supported on the current target or without the required feature.
+    Unsupported,
 }
 
 impl Display for Error {
@@ -28,8 +30,9 @@ impl Display for Error {
             Error::FindLibError { msg } => write!(f, "{msg}"),
             Error::FindSymbolError { msg } => write!(f, "{msg}"),
             Error::IteratorPhdrError { err } => write!(f, "{:?}", err),
-            Error::ParseLdCacheError { msg } => write!(f, "{msg}"),
-            Error::InvalidPath => write!(f, "Invalid path"),
+            Error::ParseLdCacheError { msg } => write!(f, "ParseLdCacheError: {msg}"),
+            Error::InvalidPath => write!(f, "InvalidPath"),
+            Error::Unsupported => write!(f, "Unsupported"),
         }
     }
 }

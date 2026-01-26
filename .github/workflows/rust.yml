@@ -25,6 +25,21 @@ jobs:
       run: sh ci/run.sh
     strategy:
       matrix:
-        target: [ x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, riscv64gc-unknown-linux-gnu ]
-        channel: [ 1.88.0, stable ]
-        features: ["fs"]
+        include:
+          # Test all architectures with default features on stable
+          - target: x86_64-unknown-linux-gnu
+            channel: stable
+            features: "use-syscall"
+          - target: aarch64-unknown-linux-gnu
+            channel: stable
+            features: "use-syscall"
+          - target: riscv64gc-unknown-linux-gnu
+            channel: stable
+            features: "use-syscall"
+          # Test MSRV and non-syscall path on x86_64
+          - target: x86_64-unknown-linux-gnu
+            channel: 1.88.0
+            features: "use-syscall"
+          - target: x86_64-unknown-linux-gnu
+            channel: stable
+            features: ""

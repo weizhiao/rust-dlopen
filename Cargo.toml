@@ -27,46 +27,48 @@ version = '2.9.0'
 [dependencies.elf_loader]
 git = "https://github.com/weizhiao/Relink.git"
 default-features = false
-features = ["use-syscall", "log"]
+features = ["log"]
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2.171", default-features = false }
 
 [dependencies]
 bitflags = "2.6.0"
 log = "0.4.22"
 syscalls = "0.7.0"
+cfg-if = "1.0.0"
 
 [features]
-default = ["fs"]
-# enable std
-fs = []
+default = []
 # activate specific versions of symbols for dynamic library loading
 version = ["elf_loader/version"]
+use-syscall = ["elf_loader/use-syscall"]
 
 [dev-dependencies]
 criterion = "0.5.1"
 libloading = "0.8.5"
 env_logger = "0.11.6"
-libc = "0.2.149"
 
 [[bench]]
 name = "dlopen"
 harness = false
-required-features = ["fs"]
+required-features = []
 
 [[bench]]
 name = "dlopen_llvm"
 harness = false
-required-features = ["fs"]
+required-features = []
 
 [[bench]]
 name = "dlsym"
 harness = false
-required-features = ["fs"]
+required-features = []
 
 [[bench]]
 name = "dl_iterate_phdr"
 harness = false
-required-features = ["fs"]
+required-features = []
 
 [[example]]
 name = "dlopen"
-required-features = ["fs"]
+required-features = []

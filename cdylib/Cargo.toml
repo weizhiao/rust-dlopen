@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies.dlopen-rs]
 path = "../"
 default-features = false
-features = ["fs"]
+features = ["use-syscall"]
 
 [dependencies]
 ctor = "0.4.1"

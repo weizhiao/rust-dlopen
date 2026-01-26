@@ -54,7 +54,6 @@ impl ElfLibrary {
     /// let path = "/path/to/library.so";
     /// let lib = ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL).expect("Failed to load library");
     /// ```
-    #[cfg(feature = "fs")]
     #[inline]
     pub fn dlopen(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfLibrary> {
         dlopen_impl(path.as_ref(), flags, || {
@@ -215,31 +214,23 @@ impl<'a> OpenContext<'a> {
 
                 // 3. Find and Load
                 find_library(rpath, lib_name, |path| {
-                    #[cfg(feature = "fs")]
-                    {
-                        let new_lib = ElfLibrary::from_file(path.as_str(), self.flags)?;
-                        let inner = new_lib.core();
-                        let relocated = unsafe { RelocatedDylib::from_core(inner.clone()) };
+                    let new_lib = ElfLibrary::from_file(path.as_str(), self.flags)?;
+                    let inner = new_lib.core();
+                    let relocated = unsafe { RelocatedDylib::from_core(inner.clone()) };
 
-                        // Register BEFORE pushing to `new_libs` to get correct index?
-                        // Original code: set_new_idx(new_libs.len()) THEN push.
-                        register(
-                            relocated.clone(),
-                            self.flags,
-                            self.lock.as_mut().unwrap(),
-                            *DylibState::default().set_new_idx(self.new_libs.len() as _),
-                        );
+                    // Register BEFORE pushing to `new_libs` to get correct index?
+                    // Original code: set_new_idx(new_libs.len()) THEN push.
+                    register(
+                        relocated.clone(),
+                        self.flags,
+                        self.lock.as_mut().unwrap(),
+                        *DylibState::default().set_new_idx(self.new_libs.len() as _),
+                    );
 
-                        self.dep_libs.push(relocated);
-                        self.dep_source.push(Some(self.new_libs.len()));
-                        self.new_libs.push(Some(new_lib));
-                        Ok(())
-                    }
-                    #[cfg(not(feature = "fs"))]
-                    {
-                        let _ = path;
-                        Err(find_lib_error(format!("can not find file: {}", lib_name)))
-                    }
+                    self.dep_libs.push(relocated);
+                    self.dep_source.push(Some(self.new_libs.len()));
+                    self.new_libs.push(Some(new_lib));
+                    Ok(())
                 })?;
             }
             cur_pos += 1;
@@ -426,10 +417,7 @@ static DEFAULT_PATH: spin::Lazy<Box<[ElfPath]>> = Lazy::new(|| unsafe {
     v.into_boxed_slice()
 });
 static LD_CACHE: Lazy<Box<[ElfPath]>> = Lazy::new(|| {
-    #[cfg(feature = "fs")]
-    return crate::utils::cache::build_ld_cache().unwrap();
-    #[cfg(not(feature = "fs"))]
-    Box::new([])
+    crate::utils::cache::build_ld_cache().unwrap_or_else(|_| Box::new([]))
 });
 
 #[inline]
@@ -496,19 +484,14 @@ pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const
             .1
             .get_dylib()
     } else {
-        #[cfg(feature = "fs")]
-        {
-            let flags = OpenFlags::from_bits_retain(flags as _);
-            let filename = unsafe { core::ffi::CStr::from_ptr(filename) };
-            let path = filename.to_str().unwrap();
-            if let Ok(lib) = ElfLibrary::dlopen(path, flags) {
-                lib
-            } else {
-                return core::ptr::null();
-            }
+        let flags = OpenFlags::from_bits_retain(flags as _);
+        let filename = unsafe { core::ffi::CStr::from_ptr(filename) };
+        let path = filename.to_str().unwrap();
+        if let Ok(lib) = ElfLibrary::dlopen(path, flags) {
+            lib
+        } else {
+            return core::ptr::null();
         }
-        #[cfg(not(feature = "fs"))]
-        return core::ptr::null();
     };
     Box::into_raw(Box::new(core::mem::take(&mut lib.deps).unwrap())) as _
 }

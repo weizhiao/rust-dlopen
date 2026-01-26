@@ -262,6 +262,7 @@ name = "dlopen-rs"
 version = "0.7.3"
 dependencies = [
  "bitflags",
+ "cfg-if",
  "criterion",
  "elf_loader",
  "env_logger",
