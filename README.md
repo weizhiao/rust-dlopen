@@ -31,10 +31,10 @@ $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examp
 5. Allows repeated loading of the same dynamic library into memory. Using the `CUSTOM_NOT_REGISTER` flag in OpenFlags enables multiple coexisting copies of a library (identical or modified) in memory, facilitating runtime dynamic library `hot-swapping`.
 
 ## Feature
-| Feature | Default | Description                                                       |
-| ------- | ------- | ----------------------------------------------------------------- |
-| fs      | Yes     | Enable this to use the file system.                               |
-| version | No      | Activate specific versions of symbols for dynamic library loading |
+| Feature     | Default | Description                                                       |
+| ----------- | ------- | ----------------------------------------------------------------- |
+| use-syscall | No      | Use syscalls to load dynamic libraries from the file system.      |
+| version     | No      | Activate specific versions of symbols for dynamic library loading |
 
 ## Architecture Support
 

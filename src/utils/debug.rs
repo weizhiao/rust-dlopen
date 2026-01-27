@@ -1,4 +1,4 @@
-use crate::core_impl::types::{LinkMap, UserData};
+use crate::core_impl::types::{LinkMap, ExtraData};
 use spin::Mutex;
 
 use core::{
@@ -73,7 +73,7 @@ pub(crate) unsafe fn add_debug_link_map(link_map: *mut LinkMap) {
     });
 }
 
-impl Drop for UserData {
+impl Drop for ExtraData {
     fn drop(&mut self) {
         if let Some(link_map) = self.link_map.as_ref() {
             let link_map_ptr = core::ptr::addr_of!(**link_map) as *mut LinkMap;

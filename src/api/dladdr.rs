@@ -31,7 +31,7 @@ impl DlInfo {
     /// Name of symbol whose definition overlaps addr
     #[inline]
     pub fn symbol_name(&self) -> Option<&str> {
-        self.sname.map(|s| s.to_str().unwrap())
+        self.sname.and_then(|s| s.to_str().ok())
     }
 
     /// Exact address of symbol
@@ -71,20 +71,31 @@ impl ElfLibrary {
                 saddr: 0,
             };
             let symtab = dl_info.dylib.inner.symtab();
+            let mut best_match: Option<(usize, &CStr)> = None;
             for i in 0..symtab.count_syms() {
                 let (sym, syminfo) = symtab.symbol_idx(i);
+                if sym.st_value() == 0 || !sym.is_ok_bind() || !sym.is_ok_type() {
+                    continue;
+                }
                 let start = dl_info.dylib.base() + sym.st_value();
                 let end = start + sym.st_size();
-                if sym.st_value() != 0
-                    && sym.is_ok_bind()
-                    && sym.is_ok_type()
-                    && (start..end).contains(&addr)
-                {
-                    dl_info.sname = Some(unsafe {
-                        core::mem::transmute::<&CStr, &CStr>(syminfo.cname().unwrap())
-                    });
-                    dl_info.saddr = start;
+                if start <= addr && (sym.st_size() == 0 || addr < end) {
+                    if let Some((best_start, _)) = best_match {
+                        if start > best_start {
+                            if let Some(cname) = syminfo.cname() {
+                                best_match = Some((start, cname));
+                            }
+                        }
+                    } else {
+                        if let Some(cname) = syminfo.cname() {
+                            best_match = Some((start, cname));
+                        }
+                    }
                 }
+            }
+            if let Some((start, cname)) = best_match {
+                dl_info.sname = Some(unsafe { core::mem::transmute(cname) });
+                dl_info.saddr = start;
             }
             dl_info
         })
@@ -98,7 +109,7 @@ pub unsafe extern "C" fn dladdr(addr: *const c_void, info: *mut CDlinfo) -> c_in
     if let Some(dl_info) = ElfLibrary::dladdr(addr as usize) {
         let info = unsafe { &mut *info };
         info.dli_fbase = dl_info.dylib().base() as _;
-        info.dli_fname = dl_info.dylib().name().as_ptr() as _;
+        info.dli_fname = dl_info.dylib().cname();
         info.dli_saddr = dl_info.symbol_addr().unwrap_or(0) as _;
         info.dli_sname = dl_info.sname.map_or(null(), |s| s.as_ptr());
         1

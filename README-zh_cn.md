@@ -36,8 +36,9 @@ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/example
 | std     | 是           | 启用Rust标准库                               |
 | debug   | 是           | 启用后可以使用 gdb/lldb 调试已加载的动态库。 |
 | mmap    | 是           | 启用在有mmap的平台上的默认实现               |
-| version | 否           | 在寻找符号时使用符号的版本号                 |
-| tls     | 是           | 启用后动态库中可以使用线程本地存储。         |
+| version     | 否           | 在寻找符号时使用符号的版本号                 |
+| tls         | 是           | 启用后动态库中可以使用线程本地存储。         |
+| use-syscall | 否           | 使用系统调用从文件系统中加载动态库。         |
 
 ## 指令集支持
 

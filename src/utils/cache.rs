@@ -1,134 +1,119 @@
 use crate::error::parse_ld_cache_error;
-use crate::{Result, api::dlopen::ElfPath};
+use crate::Result;
 use alloc::boxed::Box;
 use alloc::{string::String, vec::Vec};
 
-pub(crate) fn build_ld_cache() -> Result<Box<[ElfPath]>> {
-    // 尝试读取 /etc/ld.so.cache 文件
-    let buffer = crate::os::read_file("/etc/ld.so.cache")?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LdCacheEntry {
+    pub name: String,
+    pub path: String,
+}
 
-    // 解析 ld.so.cache 内容
+pub(crate) fn build_ld_cache() -> Result<Box<[LdCacheEntry]>> {
+    let buffer = crate::os::read_file("/etc/ld.so.cache")?;
     parse_ld_cache(&buffer)
 }
 
-fn parse_ld_cache(data: &[u8]) -> Result<Box<[ElfPath]>> {
-    // 检查新格式的魔数
-    let new_cache_magic = b"glibc-ld.so.cache";
-    let new_cache_version = b"1.1";
+fn parse_ld_cache(data: &[u8]) -> Result<Box<[LdCacheEntry]>> {
+    const MAGIC_NEW: &[u8] = b"glibc-ld.so.cache1.1";
 
-    if data.len() > 20
-        && data[0..new_cache_magic.len()] == *new_cache_magic
-        && data[17..20] == *new_cache_version
-    {
-        parse_new_format(data)
-    } else {
-        // 不支持的格式或旧格式
-        return Err(parse_ld_cache_error("Unsupported ld.so.cache format"));
-    }
+    // 1. 修复：在整个文件中搜索，而不是只搜前4KB
+    // 很多系统的旧缓存区会超过4KB
+    let start_offset = data
+        .windows(MAGIC_NEW.len())
+        .position(|window| window == MAGIC_NEW)
+        .ok_or(parse_ld_cache_error(
+            "Could not find glibc-ld.so.cache1.1 magic",
+        ))?;
+
+    parse_new_format(&data[start_offset..])
 }
 
-fn parse_new_format(data: &[u8]) -> Result<Box<[ElfPath]>> {
-    if data.len() < 48 {
-        return Err(parse_ld_cache_error("ld.so.cache file is too small"));
+fn parse_new_format(data: &[u8]) -> Result<Box<[LdCacheEntry]>> {
+    // data 现在的 0 偏移处就是 MAGIC_NEW
+    let header_size = 48; // 标准 glibc new format header 大小
+
+    // 边界检查
+    if data.len() < header_size {
+        return Err(parse_ld_cache_error("Cache file too small for header"));
     }
 
-    // 解析头部信息
-    // glibc new format header is 48 bytes
-    let nlibs = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
-    let len_strings = u32::from_le_bytes([data[24], data[25], data[26], data[27]]) as usize;
+    let nlibs = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
+    let len_strings = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
 
-    let header_size = 48;
-    // in new format, entries are usually 24 bytes, but some systems use 32
-    // we can try to infer it from file size if needed, but 24 is standard for recent glibc
-    let entry_size = 24;
-    let string_table_offset = header_size + (nlibs as usize) * entry_size;
+    // 2. 优化：优先尝试标准的 24 字节大小
+    let mut entry_size = 24;
 
-    // 修正边界检查逻辑，确保字符串表在文件范围内
-    if string_table_offset > data.len() {
-        // Try fallback to 32 bytes entry size if 24 failed (some older/different glibc)
-        let entry_size_alt = 32;
-        let string_table_offset_alt = header_size + (nlibs as usize) * entry_size_alt;
-        if string_table_offset_alt > data.len() {
-            return Err(parse_ld_cache_error(
-                "Invalid ld.so.cache format: entries exceed file size",
-            ));
+    // 启发式检测：尝试探测正确的 entry_size
+    // 如果标准24字节解出来的字符串看起来不像路径，再尝试其他对齐
+    for &e_size in &[24, 32, 64] {
+        // 检查第一个条目 (i=0)
+        let entry_start = header_size;
+        if entry_start + 12 > data.len() {
+            continue;
         }
-        // If we reach here, maybe it's 32? (uncommon for 1.1)
-    }
 
-    let string_table_end = if len_strings == 0 || string_table_offset + len_strings > data.len() {
-        data.len()
-    } else {
-        string_table_offset + len_strings
-    };
+        let value_offset =
+            u32::from_le_bytes(data[entry_start + 8..entry_start + 12].try_into().unwrap())
+                as usize;
 
-    // 提取字符串表
-    let string_table = &data[string_table_offset..string_table_end];
+        // 计算字符串表的位置
+        let string_table_start = header_size + nlibs * e_size;
+        if string_table_start >= data.len() {
+            continue;
+        }
 
-    // 解析条目并提取路径
-    let mut paths = Vec::new();
-    let mut offset = header_size;
-    let mut entry_count = 0;
-
-    while offset + entry_size <= string_table_offset && entry_count < nlibs as usize {
-        let value_offset = u32::from_le_bytes([
-            data[offset + 8],
-            data[offset + 9],
-            data[offset + 10],
-            data[offset + 11],
-        ]) as usize;
-
-        // 从字符串表中提取路径
-        if value_offset < string_table.len() {
-            if let Some(path_str) = extract_string(string_table, value_offset) {
-                // 获取目录部分
-                if let Some(parent_path) = get_parent_path(&path_str) {
-                    if let Ok(elf_path) = ElfPath::from_str(&parent_path) {
-                        // 避免重复添加相同的路径
-                        if !paths.contains(&elf_path) {
-                            paths.push(elf_path);
-                        }
-                    }
+        // 尝试读取第一个库的路径
+        if value_offset < len_strings {
+            let full_str_tab = &data[string_table_start..];
+            if let Some(s) = extract_string(full_str_tab, value_offset) {
+                // 如果第一个路径以 '/' 开头，我们大概率猜对了大小
+                if s.starts_with('/') {
+                    entry_size = e_size;
+                    break;
                 }
             }
         }
-
-        offset += entry_size; // 下一个条目
-        entry_count += 1;
     }
 
-    Ok(paths.into_boxed_slice())
+    let string_table_offset = header_size + nlibs * entry_size;
+    if string_table_offset >= data.len() {
+        return Err(parse_ld_cache_error("String table offset out of bounds"));
+    }
+
+    // 字符串表区域
+    let string_table = &data[string_table_offset..];
+    let mut entries = Vec::with_capacity(nlibs);
+
+    for i in 0..nlibs {
+        let entry_start = header_size + i * entry_size;
+        if entry_start + 12 > data.len() {
+            break;
+        }
+
+        let key_idx =
+            u32::from_le_bytes(data[entry_start + 4..entry_start + 8].try_into().unwrap()) as usize;
+        let val_idx =
+            u32::from_le_bytes(data[entry_start + 8..entry_start + 12].try_into().unwrap())
+                as usize;
+
+        if let (Some(name), Some(path)) = (
+            extract_string(string_table, key_idx),
+            extract_string(string_table, val_idx),
+        ) {
+            entries.push(LdCacheEntry { name, path });
+        }
+    }
+
+    Ok(entries.into_boxed_slice())
 }
 
-fn extract_string(data: &[u8], offset: usize) -> Option<String> {
-    if offset >= data.len() {
+// 辅助函数保持不变...
+fn extract_string(table: &[u8], offset: usize) -> Option<String> {
+    if offset >= table.len() {
         return None;
     }
-
-    let mut end = offset;
-    while end < data.len() && data[end] != 0 {
-        end += 1;
-    }
-
-    if end > offset {
-        match core::str::from_utf8(&data[offset..end]) {
-            Ok(s) => Some(String::from(s)),
-            Err(_) => None,
-        }
-    } else {
-        None
-    }
-}
-
-fn get_parent_path(path: &str) -> Option<String> {
-    // 查找最后一个 '/' 字符
-    if let Some(last_slash) = path.rfind('/') {
-        if last_slash > 0 {
-            Some(String::from(&path[..last_slash]))
-        } else {
-            Some(String::from("/"))
-        }
-    } else {
-        None
-    }
+    let slice = &table[offset..];
+    let len = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
+    core::str::from_utf8(&slice[..len]).ok().map(String::from)
 }

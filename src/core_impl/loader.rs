@@ -1,4 +1,4 @@
-use crate::core_impl::types::{ARGC, ARGV, ENVP, LinkMap, UserData};
+use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
 use crate::{OpenFlags, Result, error::find_symbol_error};
 use alloc::{
@@ -21,16 +21,16 @@ use elf_loader::{
     input::{ElfBinary, ElfReader},
 };
 
-pub(crate) type ElfDylib = RawDylib<UserData>;
-pub(crate) type RelocatedDylib = LoadedCore<UserData>;
-pub(crate) type CoreComponentRef = ElfCoreRef<UserData>;
+pub(crate) type ElfDylib = RawDylib<ExtraData>;
+pub(crate) type LoadedDylib = LoadedCore<ExtraData>;
+pub(crate) type CoreComponentRef = ElfCoreRef<ExtraData>;
 
 /// Searches for a symbol in a list of relocated libraries.
 ///
 /// Iterates through the provided libraries in order and returns the first matching symbol.
 #[inline]
 pub(crate) fn find_symbol<'lib, T>(
-    libs: &'lib [RelocatedDylib],
+    libs: &'lib [LoadedDylib],
     name: &str,
 ) -> Result<Symbol<'lib, T>> {
     log::info!("Get the symbol [{}] in [{}]", name, libs[0].name());
@@ -46,7 +46,7 @@ pub(crate) fn find_symbol<'lib, T>(
 /// the search order between the local dependency scope and the global scope.
 #[inline]
 pub(crate) fn create_lazy_scope(
-    deps: &[RelocatedDylib],
+    deps: &[LoadedDylib],
     flags: OpenFlags,
 ) -> Arc<dyn for<'a> Fn(&'a str) -> Option<*const ()> + Send + Sync + 'static> {
     let deps_weak: Vec<CoreComponentRef> = deps
@@ -58,7 +58,7 @@ pub(crate) fn create_lazy_scope(
 
         let local_find = || {
             deps_weak.iter().find_map(|dep| unsafe {
-                let lib = RelocatedDylib::from_core(dep.upgrade().unwrap());
+                let lib = LoadedDylib::from_core(dep.upgrade().unwrap());
                 lib.get::<()>(name).map(|sym| {
                     log::trace!(
                         "Lazy Binding: find symbol [{}] from [{}] in local scope ",
@@ -89,7 +89,7 @@ where
     let envp = unsafe { *core::ptr::addr_of!(ENVP) as *const *mut c_char };
 
     let mut dylib = Loader::new()
-        .with_context::<UserData>()
+        .with_context::<ExtraData>()
         .with_init(Arc::new(move |init, init_array| {
             if let Some(init) = init {
                 let init: unsafe extern "C" fn(c_int, *const *mut c_char, *const *mut c_char) =
@@ -135,13 +135,6 @@ where
     unsafe { add_debug_link_map(link_map.as_mut()) };
     user_data.link_map = Some(link_map);
     user_data.c_name = Some(c_name);
-
-    log::debug!(
-        "Loading dylib [{}] at address [0x{:x}-0x{:x}]",
-        dylib.name(),
-        base,
-        base + dylib.mapped_len()
-    );
     Ok(dylib)
 }
 
@@ -151,10 +144,10 @@ where
 /// providing methods to look up symbols and inspect metadata.
 #[derive(Clone)]
 pub struct ElfLibrary {
-    pub(crate) inner: RelocatedDylib,
+    pub(crate) inner: LoadedDylib,
     pub(crate) flags: OpenFlags,
     /// The flattened dependency scope (Searchlist) used by this library.
-    pub(crate) deps: Option<Arc<[RelocatedDylib]>>,
+    pub(crate) deps: Option<Arc<[LoadedDylib]>>,
 }
 
 impl Debug for ElfLibrary {
@@ -191,7 +184,7 @@ pub trait DylibExt {
     fn shortname(&self) -> &str;
 }
 
-impl DylibExt for RelocatedDylib {
+impl DylibExt for LoadedDylib {
     #[inline]
     fn needed_libs(&self) -> &[String] {
         &self.user_data().needed_libs
@@ -213,6 +206,17 @@ impl ElfLibrary {
     #[inline]
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Get the C-style name of the dynamic library.
+    #[inline]
+    pub fn cname(&self) -> *const c_char {
+        self.inner
+            .user_data()
+            .c_name
+            .as_ref()
+            .map(|n| n.as_ptr())
+            .unwrap_or(core::ptr::null())
     }
 
     /// Get the short name of the dynamic library.

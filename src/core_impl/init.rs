@@ -1,11 +1,11 @@
 use crate::api::dl_iterate_phdr::CDlPhdrInfo;
 use crate::arch::tp;
-use crate::core_impl::types::{ARGC, ARGV, ENVP, LinkMap, UserData};
+use crate::core_impl::types::{ARGC, ARGV, ENVP, LinkMap, ExtraData};
 use crate::utils::debug::GDBDebug;
 use crate::{
     OpenFlags, Result,
     api::dl_iterate_phdr::CallBack,
-    core_impl::loader::{DylibExt, RelocatedDylib},
+    core_impl::loader::{DylibExt, LoadedDylib},
     core_impl::register::{DylibState, MANAGER, register},
 };
 use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, string::String, vec::Vec};
@@ -111,7 +111,7 @@ unsafe fn from_raw(
     extra: Option<(&'static [ElfPhdr], Option<NonNull<u8>>, Option<usize>)>,
     add_debug: bool,
     host_link_map: *mut LinkMap,
-) -> Result<Option<RelocatedDylib>> {
+) -> Result<Option<LoadedDylib>> {
     log::info!(
         "from_raw: name={:?}, base={:#x}, dynamic_ptr={:?}, host_link_map={:?}",
         name,
@@ -124,7 +124,7 @@ unsafe fn from_raw(
         return Ok(None);
     }
 
-    let mut user_data = UserData::new();
+    let mut user_data = ExtraData::new();
     user_data.c_name = Some(name);
 
     // 1. 初始化 LinkMap
@@ -190,12 +190,12 @@ unsafe fn from_raw(
         len
     );
 
-    unsafe fn no_munmap(_ptr: NonNull<c_void>, _len: usize) -> elf_loader::Result<()> {
+    unsafe fn no_munmap(_ptr: *mut c_void, _len: usize) -> elf_loader::Result<()> {
         Ok(())
     }
 
     let lib = unsafe {
-        RelocatedDylib::new_unchecked::<DefaultTlsResolver>(
+        LoadedDylib::new_unchecked::<DefaultTlsResolver>(
             user_data
                 .c_name
                 .as_ref()
@@ -203,7 +203,7 @@ unsafe fn from_raw(
                 .to_string_lossy()
                 .into_owned(),
             use_phdrs,
-            (NonNull::new(base as _).unwrap(), len),
+            (base as *mut c_void, len),
             no_munmap,
             extra.and_then(|e| e.2).map(|o| -(o as isize)),
             user_data,
@@ -394,7 +394,7 @@ fn init_libc_globals() {
         return;
     };
 
-    let inner = libc.relocated_dylib_ref();
+    let inner = libc.dylib_ref();
     unsafe {
         if *core::ptr::addr_of!(ARGC) == 0 {
             if let Some(argc_symbol) = inner.get::<*const c_int>("__libc_argc") {

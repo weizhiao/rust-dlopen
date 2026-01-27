@@ -1,16 +1,18 @@
+use elf_loader::elf::abi::PT_GNU_EH_FRAME;
+
 use crate::ElfLibrary;
-use crate::core_impl::types::LinkMap;
 use crate::core_impl::register::MANAGER;
+use crate::core_impl::types::LinkMap;
 use core::ffi::{c_int, c_void};
 
 #[repr(C)]
-pub struct DlFindObject {
-    pub dlfo_flags: usize,            // 0
-    pub dlfo_map_start: *mut c_void,  // 8
-    pub dlfo_map_end: *mut c_void,    // 16
-    pub dlfo_link_map: *mut LinkMap,  // 24
-    pub dlfo_eh_frame: *const c_void, // 32
-    pub dlfo_reserved: [usize; 7],    // 40
+struct DlFindObject {
+    dlfo_flags: usize,            // 0
+    dlfo_map_start: *mut c_void,  // 8
+    dlfo_map_end: *mut c_void,    // 16
+    dlfo_link_map: *mut LinkMap,  // 24
+    dlfo_eh_frame: *const c_void, // 32
+    dlfo_reserved: [usize; 7],    // 40
 }
 
 pub(crate) fn addr2dso(addr: usize) -> Option<ElfLibrary> {
@@ -18,10 +20,10 @@ pub(crate) fn addr2dso(addr: usize) -> Option<ElfLibrary> {
     // Use the manager directly to avoid potential cloning if not needed,
     // but here we return ElfLibrary which is a wrapper.
     crate::lock_read!(MANAGER).all.values().find_map(|v| {
-        let start = v.relocated_dylib_ref().base();
-        let end = start + v.relocated_dylib_ref().mapped_len();
+        let start = v.dylib_ref().base();
+        let end = start + v.dylib_ref().mapped_len();
         if (start..end).contains(&addr) {
-            Some(v.get_dylib())
+            Some(v.get_lib())
         } else {
             None
         }
@@ -42,7 +44,7 @@ extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut DlFindObject) -> c_i
 
     let eh_frame = phdrs
         .iter()
-        .find(|p| p.p_type == 0x6474e550) // PT_GNU_EH_FRAME
+        .find(|p| p.p_type == PT_GNU_EH_FRAME)
         .map(|p| dso.base() + p.p_vaddr as usize)
         .unwrap_or(0);
 

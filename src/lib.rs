@@ -53,7 +53,7 @@ use bitflags::bitflags;
 pub use crate::core_impl::init::init;
 pub use crate::core_impl::loader::ElfLibrary;
 pub use crate::error::Error;
-pub use elf_loader::{image::Symbol, os::Mmap};
+pub use elf_loader::image::Symbol;
 
 #[cfg(not(any(
     target_arch = "x86_64",

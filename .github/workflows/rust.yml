@@ -21,7 +21,7 @@ jobs:
         TARGET: ${{ matrix.target }}
         CHANNEL: ${{ matrix.channel }}
         FEATURES: ${{ matrix.features }}
-        OP: test
+        OP: ${{ matrix.op }}
       run: sh ci/run.sh
     strategy:
       matrix:
@@ -30,16 +30,21 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             channel: stable
             features: "use-syscall"
+            op: test
           - target: aarch64-unknown-linux-gnu
             channel: stable
             features: "use-syscall"
+            op: build
           - target: riscv64gc-unknown-linux-gnu
             channel: stable
             features: "use-syscall"
+            op: build
           # Test MSRV and non-syscall path on x86_64
           - target: x86_64-unknown-linux-gnu
             channel: 1.88.0
             features: "use-syscall"
+            op: test
           - target: x86_64-unknown-linux-gnu
             channel: stable
             features: ""
+            op: test

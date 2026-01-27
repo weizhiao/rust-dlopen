@@ -8,7 +8,7 @@ pub(crate) static mut ENVP: *const *const c_char = core::ptr::null();
 
 /// User data associated with a dynamic library, used for internal tracking and debugging information.
 #[derive(Default)]
-pub(crate) struct UserData {
+pub(crate) struct ExtraData {
     /// Canonical name of the library as a C-compatible string.
     pub(crate) c_name: Option<CString>,
     /// The link map entry for this library, following the glibc-compatible structure.
@@ -19,7 +19,7 @@ pub(crate) struct UserData {
     pub(crate) dynamic_table: Option<Box<[ElfDyn]>>,
 }
 
-impl core::fmt::Debug for UserData {
+impl core::fmt::Debug for ExtraData {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut d = f.debug_struct("UserData");
         d.field("c_name", &self.c_name);
@@ -30,7 +30,7 @@ impl core::fmt::Debug for UserData {
     }
 }
 
-impl UserData {
+impl ExtraData {
     #[inline]
     pub fn new() -> Self {
         Self {
