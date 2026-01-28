@@ -137,7 +137,10 @@ impl<'a> Drop for OpenContext<'a> {
 }
 
 impl<'a> OpenContext<'a> {
-    fn new(flags: OpenFlags) -> Self {
+    fn new(mut flags: OpenFlags) -> Self {
+        if get_env("LD_BIND_NOW").is_some() {
+            flags |= OpenFlags::RTLD_NOW;
+        }
         let lock = crate::lock_write!(MANAGER);
         let all_len = lock.all.len();
         let global_len = lock.global.len();
@@ -153,8 +156,9 @@ impl<'a> OpenContext<'a> {
         }
     }
 
-    fn check_existing(&mut self, shortname: &str) -> Option<ElfLibrary> {
-        loop {
+    fn try_existing(&mut self, path: &str) -> Option<ElfLibrary> {
+        let shortname = path.rsplit_once('/').map_or(path, |(_, name)| name);
+        let mut lib = loop {
             let state = {
                 let lock = self.lock.as_ref().unwrap();
                 match lock.all.get(shortname) {
@@ -165,7 +169,7 @@ impl<'a> OpenContext<'a> {
 
             if state.is_relocated() {
                 let lock = self.lock.as_ref().unwrap();
-                return Some(lock.all.get(shortname).unwrap().get_lib());
+                break lock.all.get(shortname).unwrap().get_lib();
             } else {
                 // It's being loaded or relocated
                 drop(self.lock.take());
@@ -173,13 +177,50 @@ impl<'a> OpenContext<'a> {
                 self.lock = Some(crate::lock_write!(MANAGER));
                 continue;
             }
+        };
+
+        log::info!("dlopen: Found existing library [{}]", path);
+        let flags = self.flags;
+        if (flags.contains(OpenFlags::RTLD_GLOBAL) && !lib.flags.contains(OpenFlags::RTLD_GLOBAL))
+            || (flags.contains(OpenFlags::RTLD_NODELETE)
+                && !lib.flags.contains(OpenFlags::RTLD_NODELETE))
+        {
+            log::debug!("Updating library flags for [{}]", shortname);
+            let lock = self.lock.as_mut().unwrap();
+            if let Some(entry) = lock.all.get_mut(shortname) {
+                entry.set_flags(
+                    entry.flags() | (flags & (OpenFlags::RTLD_GLOBAL | OpenFlags::RTLD_NODELETE)),
+                );
+            }
+            if flags.contains(OpenFlags::RTLD_GLOBAL) {
+                if let Some(entry) = lock.all.get(shortname) {
+                    let core = entry.dylib();
+                    lock.global.insert(shortname.to_owned(), core);
+                }
+            }
+            // Update the flags in the current handle to reflect promotion
+            lib.flags |= flags & (OpenFlags::RTLD_GLOBAL | OpenFlags::RTLD_NODELETE);
         }
+        self.committed = true;
+        Some(lib)
     }
 
-    fn add_new(&mut self, lib: ElfDylib) -> LoadedDylib {
+    fn register_new(&mut self, lib: ElfDylib) -> LoadedDylib {
         let core = lib.core();
         let relocated = unsafe { LoadedDylib::from_core(core.clone()) };
+        let new_idx = self.new_libs.len();
+
+        register(
+            relocated.clone(),
+            self.flags,
+            self.lock.as_mut().unwrap(),
+            *DylibState::default().set_new_idx(new_idx as _),
+        );
+
+        self.dep_libs.push(relocated.clone());
+        self.dep_source.push(Some(new_idx));
         self.new_libs.push(Some(lib));
+
         relocated
     }
 
@@ -239,21 +280,7 @@ impl<'a> OpenContext<'a> {
                 // 3. Find and Load
                 find_library(rpath, runpath, lib_name, |path| {
                     let new_lib = ElfLibrary::from_file(path.as_str())?;
-                    let inner = new_lib.core();
-                    let relocated = unsafe { LoadedDylib::from_core(inner.clone()) };
-
-                    // Register BEFORE pushing to `new_libs` to get correct index?
-                    // Original code: set_new_idx(new_libs.len()) THEN push.
-                    register(
-                        relocated.clone(),
-                        self.flags,
-                        self.lock.as_mut().unwrap(),
-                        *DylibState::default().set_new_idx(self.new_libs.len() as _),
-                    );
-
-                    self.dep_libs.push(relocated);
-                    self.dep_source.push(Some(self.new_libs.len()));
-                    self.new_libs.push(Some(new_lib));
+                    self.register_new(new_lib);
                     Ok(())
                 })?;
             }
@@ -402,36 +429,22 @@ fn dlopen_impl(
     flags: OpenFlags,
     f: impl Fn() -> Result<ElfDylib>,
 ) -> Result<ElfLibrary> {
-    let mut flags = flags;
-    if get_env("LD_BIND_NOW").is_some() {
-        flags |= OpenFlags::RTLD_NOW;
-    }
     let mut ctx = OpenContext::new(flags);
 
     // 1. Initial Check / Load
-    let shortname = path.rsplit_once('/').map_or(path, |(_, name)| name);
-    log::info!("dlopen: Try to open [{}] with [{:?}] ", path, flags);
+    log::info!("dlopen: Try to open [{}] with [{:?}] ", path, ctx.flags);
 
-    if let Some(lib) = ctx.check_existing(shortname) {
-        log::info!("dlopen: Found existing library [{}]", path);
-        ctx.committed = true;
+    if let Some(lib) = ctx.try_existing(path) {
         return Ok(lib);
+    }
+
+    if flags.contains(OpenFlags::RTLD_NOLOAD) {
+        return Err(find_lib_error(format!("can not find file: {}", path)));
     }
 
     // Load new library
     let lib = f()?;
-    let relocated = ctx.add_new(lib);
-
-    // Register the primary library
-    register(
-        relocated.clone(),
-        flags,
-        ctx.lock.as_mut().unwrap(),
-        *DylibState::default().set_new_idx(0),
-    );
-
-    ctx.dep_libs.push(relocated);
-    ctx.dep_source.push(Some(0)); // Index 0 in new_libs
+    ctx.register_new(lib);
 
     // 2. Resolve Dependencies
     ctx.load_deps()?;

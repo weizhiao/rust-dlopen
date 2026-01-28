@@ -71,7 +71,7 @@ bitflags! {
         const RTLD_LAZY = 1;
         /// Resolve all symbols before `dlopen` returns.
         const RTLD_NOW = 2;
-        /// Not supported.
+        /// The library is not loaded. This can be used to test if the library is already resident.
         const RTLD_NOLOAD = 4;
         /// Prefer the search scope of this library over the global scope for symbol resolution.
         const RTLD_DEEPBIND = 8;

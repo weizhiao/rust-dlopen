@@ -100,6 +100,28 @@ fn panic() {
 }
 
 #[test]
+fn rtld_noload() {
+    compile();
+    let original_path = lib_path("libexample.so");
+    let path = lib_path("libexample_noload.so");
+    let _ = std::fs::copy(&original_path, &path);
+
+    // Should fail if not loaded
+    assert!(ElfLibrary::dlopen(&path, OpenFlags::RTLD_NOLOAD).is_err());
+
+    // Load it
+    let _lib = ElfLibrary::dlopen(&path, OpenFlags::RTLD_LOCAL).unwrap();
+
+    // Should succeed now
+    assert!(ElfLibrary::dlopen(&path, OpenFlags::RTLD_NOLOAD).is_ok());
+
+    // Should succeed with promotion
+    let lib_global =
+        ElfLibrary::dlopen(&path, OpenFlags::RTLD_NOLOAD | OpenFlags::RTLD_GLOBAL).unwrap();
+    assert!(lib_global.flags().contains(OpenFlags::RTLD_GLOBAL));
+}
+
+#[test]
 fn dladdr() {
     compile();
     let path = lib_path("libexample.so");

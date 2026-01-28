@@ -221,6 +221,12 @@ impl ElfLibrary {
         self.inner.shortname()
     }
 
+    /// Get the flags of the dynamic library.
+    #[inline]
+    pub fn flags(&self) -> OpenFlags {
+        self.flags
+    }
+
     /// Get the base address of the dynamic library.
     #[inline]
     pub fn base(&self) -> usize {
