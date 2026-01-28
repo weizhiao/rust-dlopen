@@ -15,9 +15,9 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use elf_loader::elf::abi::{
-    DF_STATIC_TLS, DT_FINI, DT_FINI_ARRAY, DT_FLAGS, DT_GNU_HASH, DT_GNU_LIBLIST, DT_HASH, DT_INIT,
-    DT_INIT_ARRAY, DT_JMPREL, DT_NULL, DT_PLTGOT, DT_REL, DT_RELA, DT_RELACOUNT, DT_STRTAB,
-    DT_SYMTAB, DT_VERDEF, DT_VERNEED, DT_VERSYM, PT_DYNAMIC, PT_LOAD, PT_TLS,
+    DT_FINI, DT_FINI_ARRAY, DT_GNU_HASH, DT_GNU_LIBLIST, DT_HASH, DT_INIT, DT_INIT_ARRAY,
+    DT_JMPREL, DT_NULL, DT_PLTGOT, DT_REL, DT_RELA, DT_RELACOUNT, DT_STRTAB, DT_SYMTAB, DT_VERDEF,
+    DT_VERNEED, DT_VERSYM, PT_DYNAMIC, PT_LOAD, PT_TLS,
 };
 use elf_loader::{
     elf::{ElfDyn, ElfHeader, ElfPhdr},
@@ -330,25 +330,11 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut 
         .map(|p| (base + p.p_vaddr as usize) as *const ElfDyn)
         .expect("No PT_DYNAMIC found in phdrs");
 
-    let static_offset = (!info.dlpi_tls_data.is_null())
-        .then(|| {
-            let is_main = unsafe { CStr::from_ptr(info.dlpi_name).to_bytes().is_empty() };
-            let has_static_tls = || unsafe {
-                let mut cur = dynamic_ptr;
-                while !cur.is_null() && (*cur).d_tag != DT_NULL as _ {
-                    if (*cur).d_tag == DT_FLAGS as _ && ((*cur).d_un & DF_STATIC_TLS as u64) != 0 {
-                        return true;
-                    }
-                    cur = cur.add(1);
-                }
-                false
-            };
-            (is_main || has_static_tls()).then(|| {
-                (DefaultTlsResolver::get_thread_pointer() as usize)
-                    .wrapping_sub(info.dlpi_tls_data as usize)
-            })
-        })
-        .flatten();
+    // Calculate static TLS offset if applicable
+    let static_offset = (!info.dlpi_tls_data.is_null()).then(|| {
+        (DefaultTlsResolver::get_thread_pointer() as usize)
+            .wrapping_sub(info.dlpi_tls_data as usize)
+    });
 
     let lib = unsafe {
         from_raw(

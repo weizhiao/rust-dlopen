@@ -1,119 +1,222 @@
-use crate::error::parse_ld_cache_error;
 use crate::Result;
+use crate::error::parse_ld_cache_error;
 use alloc::boxed::Box;
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
+use core::cmp::Ordering;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LdCacheEntry {
-    pub name: String,
-    pub path: String,
+pub(crate) struct LdCache {
+    data: Box<[u8]>,
+    header_offset: usize,
+    nlibs: usize,
+    entry_size: usize,
+    string_table_offset: usize,
 }
 
-pub(crate) fn build_ld_cache() -> Result<Box<[LdCacheEntry]>> {
-    let buffer = crate::os::read_file("/etc/ld.so.cache")?;
-    parse_ld_cache(&buffer)
-}
+const FLAG_TYPE_MASK: i32 = 0x00ff;
+const FLAG_LIBC6: i32 = 0x0003;
 
-fn parse_ld_cache(data: &[u8]) -> Result<Box<[LdCacheEntry]>> {
-    const MAGIC_NEW: &[u8] = b"glibc-ld.so.cache1.1";
+#[cfg(target_arch = "x86_64")]
+const FLAG_ARCH_CURRENT: i32 = 0x0100;
+#[cfg(target_arch = "aarch64")]
+const FLAG_ARCH_CURRENT: i32 = 0x0200;
+#[cfg(target_arch = "riscv64")]
+const FLAG_ARCH_CURRENT: i32 = 0x0500;
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
+const FLAG_ARCH_CURRENT: i32 = 0x0000;
 
-    // 1. 修复：在整个文件中搜索，而不是只搜前4KB
-    // 很多系统的旧缓存区会超过4KB
-    let start_offset = data
-        .windows(MAGIC_NEW.len())
-        .position(|window| window == MAGIC_NEW)
-        .ok_or(parse_ld_cache_error(
-            "Could not find glibc-ld.so.cache1.1 magic",
-        ))?;
+impl LdCache {
+    pub fn new() -> Result<Self> {
+        let buffer = crate::os::read_file("/etc/ld.so.cache")?;
+        const MAGIC_NEW: &[u8] = b"glibc-ld.so.cache1.1";
 
-    parse_new_format(&data[start_offset..])
-}
+        let start_offset = buffer
+            .windows(MAGIC_NEW.len())
+            .position(|window| window == MAGIC_NEW)
+            .ok_or(parse_ld_cache_error(
+                "Could not find glibc-ld.so.cache1.1 magic",
+            ))?;
 
-fn parse_new_format(data: &[u8]) -> Result<Box<[LdCacheEntry]>> {
-    // data 现在的 0 偏移处就是 MAGIC_NEW
-    let header_size = 48; // 标准 glibc new format header 大小
-
-    // 边界检查
-    if data.len() < header_size {
-        return Err(parse_ld_cache_error("Cache file too small for header"));
-    }
-
-    let nlibs = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
-    let len_strings = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
-
-    // 2. 优化：优先尝试标准的 24 字节大小
-    let mut entry_size = 24;
-
-    // 启发式检测：尝试探测正确的 entry_size
-    // 如果标准24字节解出来的字符串看起来不像路径，再尝试其他对齐
-    for &e_size in &[24, 32, 64] {
-        // 检查第一个条目 (i=0)
-        let entry_start = header_size;
-        if entry_start + 12 > data.len() {
-            continue;
+        let header = &buffer[start_offset..];
+        if header.len() < 48 {
+            return Err(parse_ld_cache_error("Cache file too small for header"));
         }
 
-        let value_offset =
-            u32::from_le_bytes(data[entry_start + 8..entry_start + 12].try_into().unwrap())
-                as usize;
+        let nlibs = u32::from_le_bytes(header[20..24].try_into().unwrap()) as usize;
 
-        // 计算字符串表的位置
-        let string_table_start = header_size + nlibs * e_size;
-        if string_table_start >= data.len() {
-            continue;
-        }
-
-        // 尝试读取第一个库的路径
-        if value_offset < len_strings {
-            let full_str_tab = &data[string_table_start..];
-            if let Some(s) = extract_string(full_str_tab, value_offset) {
-                // 如果第一个路径以 '/' 开头，我们大概率猜对了大小
-                if s.starts_with('/') {
-                    entry_size = e_size;
-                    break;
+        // Try to detect entry size (standard is 24, but can be 32, 64)
+        let mut entry_size = 24;
+        for &e_size in &[24, 32, 64] {
+            let entry_start = 48; // relative to start_offset
+            if entry_start + 12 > header.len() {
+                continue;
+            }
+            let val_idx = u32::from_le_bytes(
+                header[entry_start + 8..entry_start + 12]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let string_table_start = 48 + nlibs * e_size;
+            if string_table_start + val_idx < header.len() {
+                if let Some(s) = extract_str(&header[string_table_start..], val_idx) {
+                    if s.starts_with('/') {
+                        entry_size = e_size;
+                        break;
+                    }
                 }
             }
         }
+
+        let string_table_offset = start_offset + 48 + nlibs * entry_size;
+        let cache = LdCache {
+            data: buffer,
+            header_offset: start_offset,
+            nlibs,
+            entry_size,
+            string_table_offset,
+        };
+        if nlibs > 0 {
+            log::debug!(
+                "LdCache: first=[{:?}], last=[{:?}]",
+                cache.get_name(0),
+                cache.get_name(nlibs - 1)
+            );
+        }
+        Ok(cache)
     }
 
-    let string_table_offset = header_size + nlibs * entry_size;
-    if string_table_offset >= data.len() {
-        return Err(parse_ld_cache_error("String table offset out of bounds"));
-    }
-
-    // 字符串表区域
-    let string_table = &data[string_table_offset..];
-    let mut entries = Vec::with_capacity(nlibs);
-
-    for i in 0..nlibs {
-        let entry_start = header_size + i * entry_size;
-        if entry_start + 12 > data.len() {
-            break;
+    pub fn lookup(&self, lib_name: &str) -> Option<String> {
+        if self.nlibs == 0 {
+            return None;
         }
 
-        let key_idx =
-            u32::from_le_bytes(data[entry_start + 4..entry_start + 8].try_into().unwrap()) as usize;
-        let val_idx =
-            u32::from_le_bytes(data[entry_start + 8..entry_start + 12].try_into().unwrap())
-                as usize;
+        // Detect if the cache is sorted ascending or descending.
+        // glibc usually sorts ascending, but some environments or locales might differ.
+        let first_name = self.get_name(0)?;
+        let last_name = self.get_name(self.nlibs - 1)?;
+        let is_descending = first_name > last_name;
+        log::debug!(
+            "LD_CACHE lookup: {}, descending={}",
+            lib_name,
+            is_descending
+        );
 
-        if let (Some(name), Some(path)) = (
-            extract_string(string_table, key_idx),
-            extract_string(string_table, val_idx),
-        ) {
-            entries.push(LdCacheEntry { name, path });
+        let mut left = 0;
+        let mut right = self.nlibs;
+
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let name = self.get_name(mid)?;
+            log::trace!("LD_CACHE probe mid={}: {:?}", mid, name);
+
+            let cmp = if is_descending {
+                name.cmp(lib_name)
+            } else {
+                lib_name.cmp(name)
+            };
+
+            match cmp {
+                Ordering::Equal => {
+                    log::debug!("LD_CACHE found name match at index {}", mid);
+                    // Search backward to find the first entry with the same name
+                    let mut start = mid;
+                    while start > 0 && self.get_name(start - 1) == Some(name) {
+                        start -= 1;
+                    }
+
+                    // Scan forward from the first match
+                    let mut i = start;
+                    while i < self.nlibs && self.get_name(i) == Some(name) {
+                        if self.check_flags(i) {
+                            if let Some(path) = self.get_path(i) {
+                                log::debug!("LD_CACHE match: {} -> {}", lib_name, path);
+                                return Some(path);
+                            }
+                        }
+                        i += 1;
+                    }
+                    log::debug!("LD_CACHE no flag match for {}", lib_name);
+                    return None;
+                }
+                Ordering::Less => right = mid,
+                Ordering::Greater => left = mid + 1,
+            }
         }
+        log::debug!("LD_CACHE not found: {}", lib_name);
+        None
     }
 
-    Ok(entries.into_boxed_slice())
+    fn get_name(&self, idx: usize) -> Option<&str> {
+        let entry_offset = self.header_offset + 48 + idx * self.entry_size;
+        if entry_offset + 8 > self.data.len() {
+            return None;
+        }
+        let key_idx = u32::from_le_bytes(
+            self.data[entry_offset + 4..entry_offset + 8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        // Try relative to header first, then relative to string table
+        if let Some(s) = extract_str(&self.data[self.header_offset..], key_idx) {
+            if !s.is_empty() && !s.starts_with('/') {
+                return Some(s);
+            }
+        }
+        extract_str(&self.data[self.string_table_offset..], key_idx)
+    }
+
+    fn get_path(&self, idx: usize) -> Option<String> {
+        let entry_offset = self.header_offset + 48 + idx * self.entry_size;
+        if entry_offset + 12 > self.data.len() {
+            return None;
+        }
+        let val_idx = u32::from_le_bytes(
+            self.data[entry_offset + 8..entry_offset + 12]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        if let Some(s) = extract_str(&self.data[self.header_offset..], val_idx) {
+            if s.starts_with('/') {
+                return Some(String::from(s));
+            }
+        }
+        extract_str(&self.data[self.string_table_offset..], val_idx).map(String::from)
+    }
+
+    fn check_flags(&self, idx: usize) -> bool {
+        let entry_offset = self.header_offset + 48 + idx * self.entry_size;
+        if entry_offset + 4 > self.data.len() {
+            return false;
+        }
+        let flags = i32::from_le_bytes(
+            self.data[entry_offset..entry_offset + 4]
+                .try_into()
+                .unwrap(),
+        ) as u32;
+
+        // Basic arch and type check
+        if (flags & FLAG_TYPE_MASK as u32) != FLAG_LIBC6 as u32 {
+            return false;
+        }
+
+        if FLAG_ARCH_CURRENT != 0 && (flags & FLAG_ARCH_CURRENT as u32) == 0 {
+            return false;
+        }
+
+        true
+    }
 }
 
-// 辅助函数保持不变...
-fn extract_string(table: &[u8], offset: usize) -> Option<String> {
+fn extract_str(table: &[u8], offset: usize) -> Option<&str> {
     if offset >= table.len() {
         return None;
     }
     let slice = &table[offset..];
     let len = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
-    core::str::from_utf8(&slice[..len]).ok().map(String::from)
+    core::str::from_utf8(&slice[..len]).ok()
 }

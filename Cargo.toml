@@ -2,7 +2,7 @@
 name = "dlopen-rs"
 version = "0.7.3"
 edition = "2024"
-rust-version = "1.88.0"
+rust-version = "1.93.0"
 authors = ["wzhao <1207410841@qq.com>"]
 readme = "README.md"
 repository = "https://github.com/weizhiao/dlopen-rs"

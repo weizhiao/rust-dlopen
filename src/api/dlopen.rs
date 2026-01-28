@@ -75,9 +75,7 @@ impl ElfLibrary {
     /// ```
     #[inline]
     pub fn dlopen(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfLibrary> {
-        dlopen_impl(path.as_ref(), flags, || {
-            ElfLibrary::from_file(path.as_ref())
-        })
+        dlopen_impl(path.as_ref(), flags, |p| ElfLibrary::from_file(p))
     }
 
     /// Load a shared library from bytes. It is the same as dlopen. However, it can also be used in the no_std environment,
@@ -88,7 +86,7 @@ impl ElfLibrary {
         path: impl AsRef<str>,
         flags: OpenFlags,
     ) -> Result<ElfLibrary> {
-        dlopen_impl(path.as_ref(), flags, || {
+        dlopen_impl(path.as_ref(), flags, |_| {
             ElfLibrary::from_binary(bytes, path.as_ref())
         })
     }
@@ -106,10 +104,6 @@ struct OpenContext<'a> {
     new_libs: Vec<Option<ElfDylib>>,
     /// The flattened set of all dependencies involved in this load operation.
     dep_libs: Vec<LoadedDylib>,
-    /// Tracks the source of each library in `dep_libs`.
-    /// If `Some(j)`, the library is the `j`-th element in `new_libs`.
-    /// If `None`, the library was already present in the global manager.
-    dep_source: Vec<Option<usize>>,
     /// Loading flags for this operation.
     flags: OpenFlags,
     /// Initial lengths of the registry maps, used for rollback on failure.
@@ -148,7 +142,6 @@ impl<'a> OpenContext<'a> {
             lock: Some(lock),
             new_libs: Vec::new(),
             dep_libs: Vec::new(),
-            dep_source: Vec::new(),
             flags,
             old_all_len: all_len,
             old_global_len: global_len,
@@ -218,7 +211,6 @@ impl<'a> OpenContext<'a> {
         );
 
         self.dep_libs.push(relocated.clone());
-        self.dep_source.push(Some(new_idx));
         self.new_libs.push(Some(lib));
 
         relocated
@@ -231,14 +223,22 @@ impl<'a> OpenContext<'a> {
             let mut cur_paths: Option<(Box<[ElfPath]>, Box<[ElfPath]>)> = None;
 
             // Should we look up RPATH/RUNPATH? Only if the current parent is a NEW library.
-            let parent_new_idx = self.dep_source[cur_pos];
+            let parent_new_idx = self
+                .lock
+                .as_mut()
+                .unwrap()
+                .all
+                .get(self.dep_libs[cur_pos].shortname())
+                .unwrap()
+                .state
+                .get_new_idx()
+                .map(|idx| idx as usize);
 
             for lib_name in &lib_names {
                 // 1. Check if already loaded/managed
                 if let Some(lib) = self.lock.as_mut().unwrap().all.get_mut(lib_name) {
                     if !self.dep_libs.iter().any(|d| d.shortname() == lib_name) {
                         self.dep_libs.push(lib.dylib());
-                        self.dep_source.push(None); // Existing lib
                         log::debug!("Use an existing dylib: [{}]", lib.shortname());
 
                         // Update flags if needed
@@ -330,15 +330,19 @@ impl<'a> OpenContext<'a> {
     fn update_dependency_scopes(&mut self) {
         log::debug!("Updating dependency scopes for new libraries");
 
+        let lock = self.lock.as_mut().expect("Lock must be held");
         // Retrieve names of newly loaded libraries.
         let new_lib_names: Vec<String> = self
-            .dep_source
+            .dep_libs
             .iter()
-            .enumerate()
-            .filter_map(|(i, src)| src.map(|_| self.dep_libs[i].shortname().to_owned()))
+            .filter(|lib| {
+                lock.all
+                    .get(lib.shortname())
+                    .map_or(false, |entry| entry.state.get_new_idx().is_some())
+            })
+            .map(|lib| lib.shortname().to_owned())
             .collect();
 
-        let lock = self.lock.as_mut().expect("Lock must be held");
         crate::core_impl::register::update_dependency_scopes(lock, &new_lib_names);
     }
 
@@ -427,7 +431,7 @@ impl<'a> OpenContext<'a> {
 fn dlopen_impl(
     path: &str,
     flags: OpenFlags,
-    f: impl Fn() -> Result<ElfDylib>,
+    f: impl Fn(&str) -> Result<ElfDylib>,
 ) -> Result<ElfLibrary> {
     let mut ctx = OpenContext::new(flags);
 
@@ -443,7 +447,17 @@ fn dlopen_impl(
     }
 
     // Load new library
-    let lib = f()?;
+    let lib = if !path.contains('/') {
+        let mut loaded_lib = None;
+        find_library(&[], &[], path, |p| {
+            let lib = f(p.as_str())?;
+            loaded_lib = Some(lib);
+            Ok(())
+        })?;
+        loaded_lib.ok_or_else(|| find_lib_error(format!("can not find file: {}", path)))?
+    } else {
+        f(path)?
+    };
     ctx.register_new(lib);
 
     // 2. Resolve Dependencies
@@ -487,8 +501,8 @@ static DEFAULT_PATH: spin::Lazy<Box<[ElfPath]>> = Lazy::new(|| unsafe {
     ];
     v.into_boxed_slice()
 });
-static LD_CACHE: Lazy<Box<[crate::utils::cache::LdCacheEntry]>> =
-    Lazy::new(|| crate::utils::cache::build_ld_cache().unwrap_or_else(|_| Box::new([])));
+static LD_CACHE: Lazy<Option<crate::utils::cache::LdCache>> =
+    Lazy::new(|| crate::utils::cache::LdCache::new().ok());
 
 #[inline]
 fn fixup_rpath(lib_path: &str, rpath: &str) -> Box<[ElfPath]> {
@@ -554,9 +568,10 @@ fn find_library(
     }
 
     // 4. LD_CACHE
-    for entry in LD_CACHE.iter() {
-        if entry.name == lib_name {
-            if let Ok(path) = ElfPath::from_str(&entry.path) {
+    if let Some(cache) = &*LD_CACHE {
+        if let Some(path) = cache.lookup(lib_name) {
+            log::debug!("Found [{}] in LD_CACHE: [{}]", lib_name, path);
+            if let Ok(path) = ElfPath::from_str(&path) {
                 if f(&path).is_ok() {
                     return Ok(());
                 }

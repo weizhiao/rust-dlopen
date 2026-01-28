@@ -4,7 +4,7 @@ set -ex
 
 : "${TARGET?The TARGET environment variable must be set.}"
 
-if [ "${TARGET}" = "x86_64-unknown-linux-gnu"]; then
+if [ "${TARGET}" = "x86_64-unknown-linux-gnu" ]; then
 	CROSS=0
 else
 	CROSS=1
@@ -20,9 +20,9 @@ if [ "${CROSS}" = "1" ]; then
 fi
 
 if [ "${OP}" = "build" ]; then
-	"${CARGO}" -vv ${OP} --target="${TARGET}" --no-default-features
-	"${CARGO}" -vv ${OP} --target="${TARGET}" --no-default-features --features "${FEATURES}"
+	"${CARGO}" ${OP} --target="${TARGET}" --no-default-features
+	"${CARGO}" ${OP} --target="${TARGET}" --no-default-features --features "${FEATURES}"
 else
-	"${CARGO}" -vv ${OP} --target="${TARGET}" --no-default-features --features "${FEATURES}" -- --nocapture
+	"${CARGO}" ${OP} --target="${TARGET}" --no-default-features --features "${FEATURES}" -- --nocapture
 fi
 
