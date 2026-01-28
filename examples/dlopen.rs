@@ -10,7 +10,7 @@ fn main() {
     let path = Path::new("./target/release/libexample.so");
     let libexample1 = ElfLibrary::dlopen(
         path.as_os_str().to_str().unwrap(),
-        OpenFlags::CUSTOM_NOT_REGISTER | OpenFlags::RTLD_LAZY,
+        OpenFlags::RTLD_LAZY,
     )
     .unwrap();
     let add = unsafe { libexample1.get::<fn(i32, i32) -> i32>("add").unwrap() };

@@ -27,7 +27,6 @@ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/example
 2. 能够轻松地在运行时用自己的自定义符号替换共享库中的符号。
 3. 大多数情况下有比`ld.so`更快的速度。（加载动态库和获取符号）
 4. 提供了对Rust友好的接口。
-5. 允许重复加载某个动态库到内存中。你可以使用OpenFlags中的`CUSTOM_NOT_REGISTER`标识来做到这一点，使用该功能时，程序的内存空间中可以同时存在一个动态库的多个副本（这些副本可能完全相同，也可能有所差异），你可以利用该功能在运行时动态更新动态库。
 
 ## 特性
 

@@ -28,7 +28,6 @@ $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examp
 2. Enables easy runtime replacement of symbols in shared libraries with custom implementations.
 3. Typically faster than `ld.so` for dynamic library loading and symbol resolution.
 4. Offers Rust-friendly interfaces with ergonomic design.
-5. Allows repeated loading of the same dynamic library into memory. Using the `CUSTOM_NOT_REGISTER` flag in OpenFlags enables multiple coexisting copies of a library (identical or modified) in memory, facilitating runtime dynamic library `hot-swapping`.
 
 ## Feature
 | Feature     | Default | Description                                                       |

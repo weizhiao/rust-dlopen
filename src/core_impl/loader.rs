@@ -14,6 +14,7 @@ use core::{
     fmt::Debug,
 };
 use elf_loader::input::ElfFile;
+use elf_loader::loader::LifecycleContext;
 use elf_loader::{
     Loader,
     elf::{ElfDyn, ElfPhdr, abi::PT_DYNAMIC},
@@ -80,30 +81,29 @@ pub(crate) fn create_lazy_scope(
     })
 }
 
-fn from_impl<'a, I>(object: I, _flags: OpenFlags) -> Result<ElfDylib>
+fn from_impl<'a, I>(object: I) -> Result<ElfDylib>
 where
     I: ElfReader + elf_loader::input::IntoElfReader<'a>,
 {
-    let argc = unsafe { *core::ptr::addr_of!(ARGC) };
-    let argv = unsafe { *core::ptr::addr_of!(ARGV) };
-    let envp = unsafe { *core::ptr::addr_of!(ENVP) as *const *mut c_char };
-
     let mut dylib = Loader::new()
+        .with_default_tls_resolver()
         .with_context::<ExtraData>()
-        .with_init(Arc::new(move |init, init_array| {
-            if let Some(init) = init {
-                let init: unsafe extern "C" fn(c_int, *const *mut c_char, *const *mut c_char) =
-                    unsafe { core::mem::transmute(init) };
+        .with_init(|ctx: &LifecycleContext| {
+            let argc = unsafe { *core::ptr::addr_of!(ARGC) };
+            let argv = unsafe { *core::ptr::addr_of!(ARGV) };
+            let envp = unsafe { *core::ptr::addr_of!(ENVP) as *const *mut c_char };
+            type InitFn = unsafe extern "C" fn(c_int, *const *mut c_char, *const *mut c_char);
+            if let Some(init) = ctx.func() {
+                let init: InitFn = unsafe { core::mem::transmute(init) };
                 unsafe { init(argc as c_int, argv, envp) };
             }
-            if let Some(init_array) = init_array {
+            if let Some(init_array) = ctx.func_array() {
                 for &f in init_array {
-                    let f: unsafe extern "C" fn(c_int, *const *mut c_char, *const *mut c_char) =
-                        unsafe { core::mem::transmute(f) };
+                    let f: InitFn = unsafe { core::mem::transmute(f) };
                     unsafe { f(argc as c_int, argv, envp) };
                 }
             }
-        }))
+        })
         .load_dylib(object)?;
     let needed_libs = dylib
         .needed_libs()
@@ -162,20 +162,16 @@ impl Debug for ElfLibrary {
 impl ElfLibrary {
     /// Find and load a elf dynamic library from path.
     #[inline]
-    pub(crate) fn from_file(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfDylib> {
+    pub(crate) fn from_file(path: impl AsRef<str>) -> Result<ElfDylib> {
         let file = ElfFile::from_path(path.as_ref())?;
-        from_impl(file, flags)
+        from_impl(file)
     }
 
     /// Load a elf dynamic library from bytes.
     #[inline]
-    pub(crate) fn from_binary(
-        bytes: &[u8],
-        path: impl AsRef<str>,
-        flags: OpenFlags,
-    ) -> Result<ElfDylib> {
+    pub(crate) fn from_binary(bytes: &[u8], path: impl AsRef<str>) -> Result<ElfDylib> {
         let file = ElfBinary::new(path.as_ref(), bytes);
-        from_impl(file, flags)
+        from_impl(file)
     }
 }
 

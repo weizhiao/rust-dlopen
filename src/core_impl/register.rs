@@ -25,9 +25,7 @@ macro_rules! lock_read {
 
 impl Drop for ElfLibrary {
     fn drop(&mut self) {
-        if self.flags.contains(OpenFlags::RTLD_NODELETE)
-            | self.flags.contains(OpenFlags::CUSTOM_NOT_REGISTER)
-        {
+        if self.flags.contains(OpenFlags::RTLD_NODELETE) {
             return;
         }
         let mut removed_libs = Vec::new();
@@ -230,23 +228,17 @@ pub(crate) fn register(
     manager: &mut Manager,
     state: DylibState,
 ) {
-    if flags.contains(OpenFlags::CUSTOM_NOT_REGISTER) {
-        log::trace!(
-            "Skipping registration for [{}] due to CUSTOM_NOT_REGISTER",
-            lib.name()
-        );
-        return;
-    }
     let name = lib.name();
     let is_main = name.is_empty();
     let shortname = lib.shortname().to_owned();
 
     let mut flags = flags;
-    if shortname.contains("libc.so")
-        || shortname.contains("libpthread.so")
-        || shortname.contains("libdl.so")
-        || shortname.contains("libgcc_s.so")
-        || shortname.contains("ld-linux")
+    if name.contains("libc")
+        || name.contains("libpthread")
+        || name.contains("libdl")
+        || name.contains("libgcc_s")
+        || name.contains("ld-linux")
+        || name.contains("ld-musl")
     {
         flags |= OpenFlags::RTLD_NODELETE;
     }

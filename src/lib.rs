@@ -42,7 +42,6 @@
 extern crate alloc;
 
 pub mod api;
-mod arch;
 mod core_impl;
 mod error;
 mod os;
@@ -80,8 +79,6 @@ bitflags! {
         const RTLD_GLOBAL = 256;
         /// Do not unload the library during `dlclose`.
         const RTLD_NODELETE = 4096;
-        /// dlopen-rs custom flag: fast local loading that bypasses the global registry and locking.
-        const CUSTOM_NOT_REGISTER = 1024;
     }
 }
 

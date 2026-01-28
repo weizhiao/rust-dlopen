@@ -76,7 +76,7 @@ impl ElfLibrary {
     #[inline]
     pub fn dlopen(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfLibrary> {
         dlopen_impl(path.as_ref(), flags, || {
-            ElfLibrary::from_file(path.as_ref(), flags)
+            ElfLibrary::from_file(path.as_ref())
         })
     }
 
@@ -89,7 +89,7 @@ impl ElfLibrary {
         flags: OpenFlags,
     ) -> Result<ElfLibrary> {
         dlopen_impl(path.as_ref(), flags, || {
-            ElfLibrary::from_binary(bytes, path.as_ref(), flags)
+            ElfLibrary::from_binary(bytes, path.as_ref())
         })
     }
 }
@@ -122,7 +122,7 @@ struct OpenContext<'a> {
 impl<'a> Drop for OpenContext<'a> {
     fn drop(&mut self) {
         // If not committed, roll back changes to the global registry.
-        if !self.committed && !self.flags.contains(OpenFlags::CUSTOM_NOT_REGISTER) {
+        if !self.committed {
             log::debug!("Destroying newly added dynamic libraries from the global");
             if let Some(mut lock) = self.lock.take() {
                 lock.all.truncate(self.old_all_len);
@@ -238,7 +238,7 @@ impl<'a> OpenContext<'a> {
 
                 // 3. Find and Load
                 find_library(rpath, runpath, lib_name, |path| {
-                    let new_lib = ElfLibrary::from_file(path.as_str(), self.flags)?;
+                    let new_lib = ElfLibrary::from_file(path.as_str())?;
                     let inner = new_lib.core();
                     let relocated = unsafe { LoadedDylib::from_core(inner.clone()) };
 
@@ -353,7 +353,13 @@ impl<'a> OpenContext<'a> {
         for &idx in order {
             let lib = core::mem::take(&mut self.new_libs[idx]).expect("Library missing");
             log::debug!("Relocating dylib [{}]", lib.name());
-            let is_lazy = lib.is_lazy();
+            let is_lazy = if self.flags.contains(OpenFlags::RTLD_NOW) {
+                false
+            } else if self.flags.contains(OpenFlags::RTLD_LAZY) {
+                true
+            } else {
+                lib.is_lazy()
+            };
 
             let scope = if self.flags.contains(OpenFlags::RTLD_DEEPBIND) {
                 deps.iter().chain(global_libs.iter())
@@ -396,18 +402,20 @@ fn dlopen_impl(
     flags: OpenFlags,
     f: impl Fn() -> Result<ElfDylib>,
 ) -> Result<ElfLibrary> {
+    let mut flags = flags;
+    if get_env("LD_BIND_NOW").is_some() {
+        flags |= OpenFlags::RTLD_NOW;
+    }
     let mut ctx = OpenContext::new(flags);
 
     // 1. Initial Check / Load
     let shortname = path.rsplit_once('/').map_or(path, |(_, name)| name);
     log::info!("dlopen: Try to open [{}] with [{:?}] ", path, flags);
 
-    if !flags.contains(OpenFlags::CUSTOM_NOT_REGISTER) {
-        if let Some(lib) = ctx.check_existing(shortname) {
-            log::info!("dlopen: Found existing library [{}]", path);
-            ctx.committed = true;
-            return Ok(lib);
-        }
+    if let Some(lib) = ctx.check_existing(shortname) {
+        log::info!("dlopen: Found existing library [{}]", path);
+        ctx.committed = true;
+        return Ok(lib);
     }
 
     // Load new library
