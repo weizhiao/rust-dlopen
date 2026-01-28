@@ -1,3 +1,4 @@
+use crate::core_impl::register::global_find;
 use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
 use crate::{OpenFlags, Result, error::find_symbol_error};
@@ -74,9 +75,11 @@ pub(crate) fn create_lazy_scope(
         };
 
         if deepbind {
-            local_find().or_else(|| crate::core_impl::register::global_find(name))
+            local_find().or_else(|| unsafe { global_find::<()>(name).map(|s| s.into_raw()) })
         } else {
-            crate::core_impl::register::global_find(name).or_else(local_find)
+            unsafe { global_find::<()>(name) }
+                .map(|s| s.into_raw())
+                .or_else(local_find)
         }
     })
 }

@@ -1,15 +1,16 @@
 //! c interface
 
+mod dl_find_object;
 pub(crate) mod dl_iterate_phdr;
 pub(crate) mod dladdr;
 pub(crate) mod dlopen;
-pub(crate) mod dlsym;
+pub mod dlsym;
 
+use crate::core_impl::loader::{DylibExt, LoadedDylib};
 use crate::core_impl::register::MANAGER;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ffi::{c_int, c_void};
-use crate::core_impl::loader::{LoadedDylib, DylibExt};
 
 pub use self::dl_iterate_phdr::dl_iterate_phdr;
 pub use self::dladdr::dladdr;

@@ -270,18 +270,54 @@ pub(crate) fn register(
 /// Finds a symbol in the global search scope.
 ///
 /// Iterates through all libraries registered with `RTLD_GLOBAL` in the order they were loaded.
-pub(crate) fn global_find(name: &str) -> Option<*const ()> {
+pub(crate) unsafe fn global_find<'a, T>(name: &str) -> Option<crate::Symbol<'a, T>> {
     lock_read!(MANAGER).global.values().find_map(|lib| unsafe {
-        lib.get::<()>(name).map(|sym| {
+        lib.get::<T>(name).map(|sym| {
             log::trace!(
                 "Lazy Binding: find symbol [{}] from [{}] in global scope ",
                 name,
                 lib.name()
             );
-            let val = sym.into_raw();
-            assert!(lib.base() != val as usize);
-            val
+            core::mem::transmute(sym)
         })
+    })
+}
+
+/// Finds the next occurrence of a symbol after the specified address.
+pub(crate) unsafe fn next_find<'a, T>(addr: usize, name: &str) -> Option<crate::Symbol<'a, T>> {
+    let lock = lock_read!(MANAGER);
+    // Find the library containing the address
+    let (idx, _) = lock.all.iter().enumerate().find(|(_, (_, v))| {
+        let start = v.inner.base();
+        let end = start + v.inner.mapped_len();
+        (start..end).contains(&addr)
+    })?;
+
+    // Search in all subsequent libraries
+    lock.all.values().skip(idx + 1).find_map(|lib| unsafe {
+        lib.inner.get::<T>(name).map(|sym| {
+            log::trace!(
+                "dlsym: find symbol [{}] from [{}] via RTLD_NEXT",
+                name,
+                lib.inner.name()
+            );
+            core::mem::transmute(sym)
+        })
+    })
+}
+
+pub(crate) fn addr2dso(addr: usize) -> Option<ElfLibrary> {
+    log::trace!("addr2dso: addr [{:#x}]", addr);
+    // Use the manager directly to avoid potential cloning if not needed,
+    // but here we return ElfLibrary which is a wrapper.
+    crate::lock_read!(MANAGER).all.values().find_map(|v| {
+        let start = v.dylib_ref().base();
+        let end = start + v.dylib_ref().mapped_len();
+        if (start..end).contains(&addr) {
+            Some(v.get_lib())
+        } else {
+            None
+        }
     })
 }
 

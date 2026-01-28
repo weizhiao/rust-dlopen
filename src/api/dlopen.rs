@@ -64,6 +64,16 @@ fn get_env(name: &str) -> Option<&'static str> {
 }
 
 impl ElfLibrary {
+    /// Get the main executable as an `ElfLibrary`. It is the same as `dlopen(NULL, RTLD_NOW)`.
+    pub fn this() -> Result<ElfLibrary> {
+        let reader = crate::lock_read!(MANAGER);
+        if let Some((_, global)) = reader.all.get_index(0) {
+            Ok(global.get_lib())
+        } else {
+            Err(find_lib_error("main executable not found".to_owned()))
+        }
+    }
+
     /// Load a shared library from a specified path. It is the same as dlopen.
     ///
     /// # Example
@@ -73,14 +83,12 @@ impl ElfLibrary {
     /// let path = "/path/to/library.so";
     /// let lib = ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL).expect("Failed to load library");
     /// ```
-    #[inline]
     pub fn dlopen(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfLibrary> {
         dlopen_impl(path.as_ref(), flags, |p| ElfLibrary::from_file(p))
     }
 
     /// Load a shared library from bytes. It is the same as dlopen. However, it can also be used in the no_std environment,
     /// and it will look for dependent libraries in those manually opened dynamic libraries.
-    #[inline]
     pub fn dlopen_from_binary(
         bytes: &[u8],
         path: impl AsRef<str>,
@@ -595,11 +603,11 @@ fn find_library(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const c_void {
     let mut lib = if filename.is_null() {
-        let reader = crate::lock_read!(MANAGER);
-        let Some((_, global)) = reader.all.get_index(0) else {
+        if let Ok(this) = ElfLibrary::this() {
+            this
+        } else {
             return core::ptr::null();
-        };
-        global.get_lib()
+        }
     } else {
         let flags = OpenFlags::from_bits_retain(flags as _);
         let filename = unsafe { core::ffi::CStr::from_ptr(filename) };

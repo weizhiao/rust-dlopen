@@ -1,9 +1,6 @@
-use elf_loader::elf::abi::PT_GNU_EH_FRAME;
-
-use crate::ElfLibrary;
-use crate::core_impl::register::MANAGER;
-use crate::core_impl::types::LinkMap;
+use crate::core_impl::{register::addr2dso, types::LinkMap};
 use core::ffi::{c_int, c_void};
+use elf_loader::elf::abi::PT_GNU_EH_FRAME;
 
 #[repr(C)]
 struct DlFindObject {
@@ -13,21 +10,6 @@ struct DlFindObject {
     dlfo_link_map: *mut LinkMap,  // 24
     dlfo_eh_frame: *const c_void, // 32
     dlfo_reserved: [usize; 7],    // 40
-}
-
-pub(crate) fn addr2dso(addr: usize) -> Option<ElfLibrary> {
-    log::trace!("addr2dso: addr [{:#x}]", addr);
-    // Use the manager directly to avoid potential cloning if not needed,
-    // but here we return ElfLibrary which is a wrapper.
-    crate::lock_read!(MANAGER).all.values().find_map(|v| {
-        let start = v.dylib_ref().base();
-        let end = start + v.dylib_ref().mapped_len();
-        if (start..end).contains(&addr) {
-            Some(v.get_lib())
-        } else {
-            None
-        }
-    })
 }
 
 #[unsafe(no_mangle)]

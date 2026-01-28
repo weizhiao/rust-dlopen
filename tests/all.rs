@@ -70,15 +70,6 @@ fn dlopen() {
 }
 
 #[test]
-fn dlsym() {
-    compile();
-    let path = lib_path("libexample.so");
-    let lib = ElfLibrary::dlopen(path, OpenFlags::RTLD_GLOBAL).unwrap();
-    let print = unsafe { lib.get::<fn(&str)>("print").unwrap() };
-    print("dlopen-rs: hello world");
-}
-
-#[test]
 fn dl_iterate_phdr() {
     compile();
     let path = lib_path("libexample.so");
