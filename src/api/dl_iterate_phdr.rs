@@ -70,9 +70,9 @@ impl ElfLibrary {
         F: FnMut(&DlPhdrInfo) -> Result<()>,
     {
         let reader = crate::lock_read!(MANAGER);
-        let dlpi_adds = reader.adds;
-        let dlpi_subs = reader.subs;
-        for lib in reader.all.values() {
+        let dlpi_adds = reader.adds();
+        let dlpi_subs = reader.subs();
+        for lib in reader.all_values() {
             let dylib = lib.dylib_ref();
             let extra_data = dylib.user_data();
             let phdrs = dylib.phdrs().unwrap_or(&[]);

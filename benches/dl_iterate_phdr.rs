@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use dlopen_rs::ElfLibrary;
 use libc::{dl_iterate_phdr, size_t};
 use std::ptr::null_mut;

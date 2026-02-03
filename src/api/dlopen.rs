@@ -67,7 +67,7 @@ impl ElfLibrary {
     /// Get the main executable as an `ElfLibrary`. It is the same as `dlopen(NULL, RTLD_NOW)`.
     pub fn this() -> Result<ElfLibrary> {
         let reader = crate::lock_read!(MANAGER);
-        if let Some((_, global)) = reader.all.get_index(0) {
+        if let Some((_, global)) = reader.get_index(0) {
             Ok(global.get_lib())
         } else {
             Err(find_lib_error("main executable not found".to_owned()))
@@ -127,12 +127,9 @@ impl<'a> Drop for OpenContext<'a> {
         if !self.committed {
             log::debug!("Destroying newly added dynamic libraries from the global");
             if let Some(mut lock) = self.lock.take() {
-                lock.all.truncate(self.old_all_len);
-                lock.global.truncate(self.old_global_len);
+                lock.truncate(self.old_all_len, self.old_global_len);
             } else {
-                let mut lock = crate::lock_write!(MANAGER);
-                lock.all.truncate(self.old_all_len);
-                lock.global.truncate(self.old_global_len);
+                crate::lock_write!(MANAGER).truncate(self.old_all_len, self.old_global_len);
             }
         }
     }
@@ -144,8 +141,8 @@ impl<'a> OpenContext<'a> {
             flags |= OpenFlags::RTLD_NOW;
         }
         let lock = crate::lock_write!(MANAGER);
-        let all_len = lock.all.len();
-        let global_len = lock.global.len();
+        let all_len = lock.all_len();
+        let global_len = lock.global_len();
         Self {
             lock: Some(lock),
             new_libs: Vec::new(),
@@ -159,10 +156,10 @@ impl<'a> OpenContext<'a> {
 
     fn try_existing(&mut self, path: &str) -> Option<ElfLibrary> {
         let shortname = path.rsplit_once('/').map_or(path, |(_, name)| name);
-        let mut lib = loop {
+        let lib = loop {
             let state = {
                 let lock = self.lock.as_ref().unwrap();
-                match lock.all.get(shortname) {
+                match lock.get(shortname) {
                     Some(lib) => lib.state,
                     None => return None,
                 }
@@ -170,38 +167,17 @@ impl<'a> OpenContext<'a> {
 
             if state.is_relocated() {
                 let lock = self.lock.as_ref().unwrap();
-                break lock.all.get(shortname).unwrap().get_lib();
+                break lock.get(shortname).unwrap().get_lib();
             } else {
                 // It's being loaded or relocated
                 drop(self.lock.take());
-                core::hint::spin_loop();
                 self.lock = Some(crate::lock_write!(MANAGER));
                 continue;
             }
         };
 
         log::info!("dlopen: Found existing library [{}]", path);
-        let flags = self.flags;
-        if (flags.contains(OpenFlags::RTLD_GLOBAL) && !lib.flags.contains(OpenFlags::RTLD_GLOBAL))
-            || (flags.contains(OpenFlags::RTLD_NODELETE)
-                && !lib.flags.contains(OpenFlags::RTLD_NODELETE))
-        {
-            log::debug!("Updating library flags for [{}]", shortname);
-            let lock = self.lock.as_mut().unwrap();
-            if let Some(entry) = lock.all.get_mut(shortname) {
-                entry.set_flags(
-                    entry.flags() | (flags & (OpenFlags::RTLD_GLOBAL | OpenFlags::RTLD_NODELETE)),
-                );
-            }
-            if flags.contains(OpenFlags::RTLD_GLOBAL) {
-                if let Some(entry) = lock.all.get(shortname) {
-                    let core = entry.dylib();
-                    lock.global.insert(shortname.to_owned(), core);
-                }
-            }
-            // Update the flags in the current handle to reflect promotion
-            lib.flags |= flags & (OpenFlags::RTLD_GLOBAL | OpenFlags::RTLD_NODELETE);
-        }
+        self.lock.as_mut().unwrap().promote(shortname, self.flags);
         self.committed = true;
         Some(lib)
     }
@@ -235,7 +211,6 @@ impl<'a> OpenContext<'a> {
                 .lock
                 .as_mut()
                 .unwrap()
-                .all
                 .get(self.dep_libs[cur_pos].shortname())
                 .unwrap()
                 .state
@@ -244,23 +219,13 @@ impl<'a> OpenContext<'a> {
 
             for lib_name in &lib_names {
                 // 1. Check if already loaded/managed
-                if let Some(lib) = self.lock.as_mut().unwrap().all.get_mut(lib_name) {
+                if self.lock.as_ref().unwrap().contains(lib_name) {
+                    let lock = self.lock.as_mut().unwrap();
                     if !self.dep_libs.iter().any(|d| d.shortname() == lib_name) {
+                        let lib = lock.get(lib_name).unwrap();
                         self.dep_libs.push(lib.dylib());
                         log::debug!("Use an existing dylib: [{}]", lib.shortname());
-
-                        // Update flags if needed
-                        if self
-                            .flags
-                            .difference(lib.flags())
-                            .contains(OpenFlags::RTLD_GLOBAL)
-                        {
-                            let shortname = lib.shortname().to_owned();
-                            log::debug!("Updating library flags for [{}]", shortname);
-                            lib.set_flags(self.flags);
-                            let core = lib.dylib();
-                            self.lock.as_mut().unwrap().global.insert(shortname, core);
-                        }
+                        lock.promote(lib_name, self.flags);
                     }
                     continue;
                 }
@@ -269,7 +234,7 @@ impl<'a> OpenContext<'a> {
                 let (rpath, runpath): (&[ElfPath], &[ElfPath]) = if let Some((r, ru)) = &cur_paths {
                     (&**r, &**ru)
                 } else if let Some(idx) = parent_new_idx {
-                    let parent_lib = self.new_libs[idx].as_ref().unwrap();
+                    let parent_lib: &ElfDylib = self.new_libs[idx].as_ref().unwrap();
                     let new_rpath = parent_lib
                         .rpath()
                         .map(|r| fixup_rpath(parent_lib.name(), r))
@@ -317,7 +282,7 @@ impl<'a> OpenContext<'a> {
         'start: while let Some(mut item) = stack.pop() {
             let names = self.new_libs[item.idx].as_ref().unwrap().needed_libs();
             for name in names.iter().skip(item.next) {
-                let lib = self.lock.as_mut().unwrap().all.get_mut(*name).unwrap();
+                let lib = self.lock.as_mut().unwrap().get_mut(*name).unwrap();
 
                 if let Some(idx) = lib.state.get_new_idx() {
                     lib.state.set_relocated();
@@ -340,25 +305,20 @@ impl<'a> OpenContext<'a> {
 
         let lock = self.lock.as_mut().expect("Lock must be held");
         // Retrieve names of newly loaded libraries.
-        let new_lib_names: Vec<String> = self
-            .dep_libs
+        let new_lib_names = self
+            .new_libs
             .iter()
-            .filter(|lib| {
-                lock.all
-                    .get(lib.shortname())
-                    .map_or(false, |entry| entry.state.get_new_idx().is_some())
-            })
-            .map(|lib| lib.shortname().to_owned())
-            .collect();
+            .filter_map(|lib_opt| lib_opt.as_ref())
+            .map(|lib| lib.short_name());
 
-        crate::core_impl::register::update_dependency_scopes(lock, &new_lib_names);
+        crate::core_impl::register::update_dependency_scopes(lock, new_lib_names);
     }
 
     /// Sets the state of all involved libraries to `RELOCATING`.
     fn set_relocating(&mut self) {
         let lock = self.lock.as_mut().expect("Lock must be held");
         for lib in &self.dep_libs {
-            if let Some(entry) = lock.all.get_mut(lib.shortname()) {
+            if let Some(entry) = lock.get_mut(lib.shortname()) {
                 entry.state.set_relocating();
             }
         }
@@ -369,7 +329,7 @@ impl<'a> OpenContext<'a> {
     fn set_relocated(&self) {
         let mut lock = crate::lock_write!(MANAGER);
         for lib in &self.dep_libs {
-            if let Some(entry) = lock.all.get_mut(lib.shortname()) {
+            if let Some(entry) = lock.get_mut(lib.shortname()) {
                 entry.state.set_relocated();
             }
         }
@@ -386,21 +346,21 @@ impl<'a> OpenContext<'a> {
         let lazy_scope = create_lazy_scope(deps, self.flags);
         let global_libs = {
             let lock = crate::lock_read!(MANAGER);
-            lock.global.values().cloned().collect::<Vec<_>>()
+            lock.global_values().cloned().collect::<Vec<_>>()
         };
 
         for &idx in order {
             let lib = core::mem::take(&mut self.new_libs[idx]).expect("Library missing");
             log::debug!("Relocating dylib [{}]", lib.name());
-            let is_lazy = if self.flags.contains(OpenFlags::RTLD_NOW) {
+            let is_lazy = if self.flags.is_now() {
                 false
-            } else if self.flags.contains(OpenFlags::RTLD_LAZY) {
+            } else if self.flags.is_lazy() {
                 true
             } else {
                 lib.is_lazy()
             };
 
-            let scope = if self.flags.contains(OpenFlags::RTLD_DEEPBIND) {
+            let scope = if self.flags.is_deepbind() {
                 deps.iter().chain(global_libs.iter())
             } else {
                 global_libs.iter().chain(deps.iter())
@@ -421,7 +381,13 @@ impl<'a> OpenContext<'a> {
 
     /// Returns an `Arc` slice of all dependencies.
     fn get_deps(&self) -> Arc<[LoadedDylib]> {
-        Arc::from(self.dep_libs.as_slice())
+        let lock = self.lock.as_ref().expect("Lock must be held");
+        let shortname = self.dep_libs[0].shortname();
+        lock.get(shortname)
+            .expect("Library must exist")
+            .deps
+            .clone()
+            .expect("Deps must be set")
     }
 
     /// Finalizes the operation and returns the `ElfLibrary`.
@@ -430,7 +396,6 @@ impl<'a> OpenContext<'a> {
         let core = deps[0].clone();
         ElfLibrary {
             inner: core,
-            flags: self.flags,
             deps: Some(deps),
         }
     }
@@ -450,7 +415,7 @@ fn dlopen_impl(
         return Ok(lib);
     }
 
-    if flags.contains(OpenFlags::RTLD_NOLOAD) {
+    if ctx.flags.is_noload() {
         return Err(find_lib_error(format!("can not find file: {}", path)));
     }
 

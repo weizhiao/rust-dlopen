@@ -25,14 +25,16 @@ pub unsafe extern "C" fn dlclose(handle: *const c_void) -> c_int {
         return 0;
     }
     let deps = unsafe { Box::from_raw(handle as *mut Arc<[LoadedDylib]>) };
-    let Some(dylib) = crate::lock_read!(MANAGER)
-        .all
-        .get(deps[0].shortname())
-        .map(|v| v.get_lib())
-    else {
-        return -1;
-    };
-    log::info!("dlclose: Closing [{}]", dylib.name());
+    let shortname = alloc::string::String::from(deps[0].shortname());
+    log::info!("dlclose: Closing [{}]", shortname);
     drop(deps);
+
+    let dylib = crate::lock_read!(MANAGER)
+        .get(&shortname)
+        .map(|v| v.get_lib());
+
+    drop(dylib);
+    // When dylib is dropped here, it will trigger ElfLibrary::drop
+    // and attempt to destroy the library if its ref count reaches the threshold.
     0
 }

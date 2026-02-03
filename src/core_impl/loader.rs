@@ -56,7 +56,7 @@ pub(crate) fn create_lazy_scope(
         .map(|dep| unsafe { dep.core_ref().downgrade() })
         .collect();
     Arc::new(move |name: &str| {
-        let deepbind = flags.contains(OpenFlags::RTLD_DEEPBIND);
+        let deepbind = flags.is_deepbind();
 
         let local_find = || {
             deps_weak.iter().find_map(|dep| unsafe {
@@ -148,7 +148,6 @@ where
 #[derive(Clone)]
 pub struct ElfLibrary {
     pub(crate) inner: LoadedDylib,
-    pub(crate) flags: OpenFlags,
     /// The flattened dependency scope (Searchlist) used by this library.
     pub(crate) deps: Option<Arc<[LoadedDylib]>>,
 }
@@ -157,7 +156,6 @@ impl Debug for ElfLibrary {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Dylib")
             .field("inner", &self.inner)
-            .field("flags", &self.flags)
             .finish()
     }
 }
@@ -224,10 +222,13 @@ impl ElfLibrary {
         self.inner.shortname()
     }
 
-    /// Get the flags of the dynamic library.
-    #[inline]
+    /// Get the current flags of the dynamic library from the global registry.
     pub fn flags(&self) -> OpenFlags {
-        self.flags
+        use crate::core_impl::register::MANAGER;
+        crate::lock_read!(MANAGER)
+            .get(self.shortname())
+            .map(|e| e.flags)
+            .unwrap_or(OpenFlags::empty())
     }
 
     /// Get the base address of the dynamic library.

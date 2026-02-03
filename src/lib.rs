@@ -49,9 +49,9 @@ mod utils;
 
 use bitflags::bitflags;
 
+pub use crate::api::dlsym::{dlsym_default, dlsym_next};
 pub use crate::core_impl::init::init;
 pub use crate::core_impl::loader::ElfLibrary;
-pub use crate::api::dlsym::{dlsym_default, dlsym_next};
 pub use crate::error::Error;
 pub use elf_loader::image::Symbol;
 
@@ -80,6 +80,36 @@ bitflags! {
         const RTLD_GLOBAL = 256;
         /// Do not unload the library during `dlclose`.
         const RTLD_NODELETE = 4096;
+    }
+}
+
+impl OpenFlags {
+    pub(crate) fn is_global(&self) -> bool {
+        self.contains(OpenFlags::RTLD_GLOBAL)
+    }
+
+    pub(crate) fn is_nodelete(&self) -> bool {
+        self.contains(OpenFlags::RTLD_NODELETE)
+    }
+
+    pub(crate) fn is_now(&self) -> bool {
+        self.contains(OpenFlags::RTLD_NOW)
+    }
+
+    pub(crate) fn is_noload(&self) -> bool {
+        self.contains(OpenFlags::RTLD_NOLOAD)
+    }
+
+    pub(crate) fn is_lazy(&self) -> bool {
+        self.contains(OpenFlags::RTLD_LAZY)
+    }
+
+    pub(crate) fn is_deepbind(&self) -> bool {
+        self.contains(OpenFlags::RTLD_DEEPBIND)
+    }
+
+    pub(crate) fn promotable(&self) -> OpenFlags {
+        *self & (OpenFlags::RTLD_GLOBAL | OpenFlags::RTLD_NODELETE)
     }
 }
 

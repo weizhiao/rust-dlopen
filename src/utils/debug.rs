@@ -1,4 +1,4 @@
-use crate::core_impl::types::{LinkMap, ExtraData};
+use crate::core_impl::types::{ExtraData, LinkMap};
 use spin::Mutex;
 
 use core::{

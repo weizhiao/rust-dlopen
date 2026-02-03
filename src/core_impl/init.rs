@@ -8,7 +8,7 @@ use crate::{
     core_impl::loader::{DylibExt, LoadedDylib},
     core_impl::register::{DylibState, MANAGER, register},
 };
-use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, string::String, vec::Vec};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr::{NonNull, null_mut},
@@ -377,8 +377,8 @@ pub fn init() {
 
             // Compute deps for all host libraries
             let mut lock = crate::lock_write!(MANAGER);
-            let names: Vec<_> = lock.all.keys().cloned().collect();
-            crate::core_impl::register::update_dependency_scopes(&mut lock, &names);
+            let names: Vec<String> = lock.keys().cloned().collect();
+            crate::core_impl::register::update_dependency_scopes(&mut lock, names.iter().map(String::as_str));
         }
         log::info!("init: initialization complete");
     });
