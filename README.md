@@ -2,7 +2,7 @@
 [![](https://img.shields.io/crates/d/dlopen-rs.svg)](https://crates.io/crates/dlopen-rs)
 [![license](https://img.shields.io/crates/l/dlopen-rs.svg)](https://crates.io/crates/dlopen-rs)
 [![dlopen-rs on docs.rs](https://docs.rs/dlopen-rs/badge.svg)](https://docs.rs/dlopen-rs)
-[![Rust](https://img.shields.io/badge/rust-1.88.0%2B-blue.svg?maxAge=3600)](https://github.com/weizhiao/dlopen_rs)
+[![Rust](https://img.shields.io/badge/rust-1.93.0%2B-blue.svg?maxAge=3600)](https://github.com/weizhiao/dlopen_rs)
 [![Build Status](https://github.com/weizhiao/dlopen-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/weizhiao/dlopen-rs/actions)
 # dlopen-rs
 
@@ -25,9 +25,8 @@ $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examp
 
 ## Advantages
 1. Provides support for loading ELF dynamic libraries to #![no_std] targets.
-2. Enables easy runtime replacement of symbols in shared libraries with custom implementations.
-3. Typically faster than `ld.so` for dynamic library loading and symbol resolution.
-4. Offers Rust-friendly interfaces with ergonomic design.
+2. Typically faster than `ld.so` for dynamic library loading and symbol resolution.
+3. Offers Rust-friendly interfaces with ergonomic design.
 
 ## Feature
 | Feature     | Default | Description                                                       |
@@ -78,13 +77,7 @@ fn main() {
 ```
 
 ## Minimum Supported Rust Version
-Rust 1.88 or higher.
-
-## TODO
-* dlinfo have not been implemented yet. dlerror currently only returns NULL.  
-* RTLD_NEXT for dlsym has not been implemented.
-* When dlopen fails, the newly loaded dynamic library is destroyed, but the functions in .fini are not called.
-* Fix multi-threading bugs.
+Rust 1.93 or higher.
 
 ## Supplement
 If you encounter any issues during use, feel free to raise them on GitHub. We warmly welcome everyone to contribute code to help improve the functionality of dlopen-rs. 😊

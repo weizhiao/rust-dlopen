@@ -8,11 +8,8 @@ fn main() {
     dlopen_rs::init();
     println!("dlopen_rs::init() finished");
     let path = Path::new("./target/release/libexample.so");
-    let libexample1 = ElfLibrary::dlopen(
-        path.as_os_str().to_str().unwrap(),
-        OpenFlags::RTLD_LAZY,
-    )
-    .unwrap();
+    let libexample1 =
+        ElfLibrary::dlopen(path.as_os_str().to_str().unwrap(), OpenFlags::RTLD_LAZY).unwrap();
     let add = unsafe { libexample1.get::<fn(i32, i32) -> i32>("add").unwrap() };
     println!("{}", add(1, 1));
 

@@ -69,7 +69,7 @@ static IS_MUSL: AtomicBool = AtomicBool::new(false);
 /// This is necessary because some dynamic linkers (like glibc) modify the dynamic table in place.
 unsafe fn recover_dynamic_table(dynamic_ptr: *const ElfDyn, base: usize) -> Vec<ElfDyn> {
     let mut count = 0;
-    while unsafe { (*dynamic_ptr.add(count)).d_tag != DT_NULL as _ } {
+    while unsafe { (*dynamic_ptr.add(count)).d_tag != DT_NULL } {
         count += 1;
     }
     let mut table = (0..=count) // include DT_NULL
@@ -378,7 +378,10 @@ pub fn init() {
             // Compute deps for all host libraries
             let mut lock = crate::lock_write!(MANAGER);
             let names: Vec<String> = lock.keys().cloned().collect();
-            crate::core_impl::register::update_dependency_scopes(&mut lock, names.iter().map(String::as_str));
+            crate::core_impl::register::update_dependency_scopes(
+                &mut lock,
+                names.iter().map(String::as_str),
+            );
         }
         log::info!("init: initialization complete");
     });

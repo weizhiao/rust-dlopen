@@ -15,6 +15,10 @@ pub(crate) unsafe fn get_r_debug() -> *mut GDBDebug {
 }
 
 pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
+    read_file_limit(path, usize::MAX)
+}
+
+pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
     let mut path_c = Vec::from(path.as_bytes());
     path_c.push(0);
 
@@ -31,16 +35,23 @@ pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
             }
 
             let mut buffer = Vec::new();
+            let read_size = core::cmp::min(size as usize, limit);
             if size > 0 {
-                buffer.reserve_exact(size as usize);
-                buffer.set_len(size as usize);
-                if libc::read(fd, buffer.as_mut_ptr() as *mut _, size as usize) != size as _ {
+                buffer.reserve_exact(read_size as usize);
+                buffer.set_len(read_size as usize);
+                if libc::read(fd, buffer.as_mut_ptr() as *mut _, read_size as usize)
+                    != read_size as isize
+                {
                     return Err(parse_ld_cache_error("Failed to read complete file"));
                 }
-            } else {
+            } else if size == 0 {
                 let mut temp = [0u8; 1024];
                 loop {
-                    let n = libc::read(fd, temp.as_mut_ptr() as *mut _, temp.len());
+                    let n = libc::read(
+                        fd,
+                        temp.as_mut_ptr() as *mut _,
+                        core::cmp::min(temp.len(), limit - buffer.len()),
+                    );
                     if n < 0 {
                         return Err(parse_ld_cache_error("Read error"));
                     }
@@ -48,6 +59,9 @@ pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
                         break;
                     }
                     buffer.extend_from_slice(&temp[..n as usize]);
+                    if buffer.len() >= limit {
+                        break;
+                    }
                 }
             }
             Ok(buffer.into_boxed_slice())

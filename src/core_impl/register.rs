@@ -29,7 +29,6 @@ impl Drop for ElfLibrary {
         {
             let mut lock = lock_write!(MANAGER);
             let shortname = self.inner.shortname();
-
             let Some(entry) = lock.get(shortname) else {
                 return;
             };
@@ -61,9 +60,9 @@ impl Drop for ElfLibrary {
                 if let Some(deps) = self.deps.as_ref() {
                     for dep in deps.iter().skip(1) {
                         let dep_shortname = dep.shortname();
-                        let dep_lib = lock
-                            .get(dep_shortname)
-                            .expect("Dependency must be registered");
+                        let Some(dep_lib) = lock.get(dep_shortname) else {
+                            continue;
+                        };
                         if dep_lib.flags.is_nodelete() {
                             continue;
                         }
@@ -269,21 +268,6 @@ impl Manager {
         self.all.iter()
     }
 
-    #[inline]
-    pub(crate) fn all_len(&self) -> usize {
-        self.all.len()
-    }
-
-    #[inline]
-    pub(crate) fn global_len(&self) -> usize {
-        self.global.len()
-    }
-
-    pub(crate) fn truncate(&mut self, all_len: usize, global_len: usize) {
-        self.all.truncate(all_len);
-        self.global.truncate(global_len);
-    }
-
     pub(crate) fn adds(&self) -> u64 {
         self.adds
     }
@@ -434,21 +418,13 @@ pub(crate) fn update_dependency_scopes<'a>(
     roots: impl Iterator<Item = &'a str>,
 ) {
     for root_name in roots {
-        debug_assert!(
-            manager.contains(root_name),
-            "Root library [{}] must be registered",
-            root_name
-        );
+        let Some(root_lib) = manager.get(root_name) else {
+            continue;
+        };
 
-        let root_lib = manager
-            .get(root_name)
-            .expect("Root library must be registered");
-
-        debug_assert!(
-            root_lib.deps.is_none(),
-            "Dependency scope for root library [{}] is already set",
-            root_name
-        );
+        if root_lib.deps.is_some() {
+            continue;
+        }
 
         let mut scope = Vec::new();
         let mut visited = BTreeSet::new();
@@ -458,29 +434,25 @@ pub(crate) fn update_dependency_scopes<'a>(
         queue.push_back(root_name.to_owned());
 
         while let Some(current_name) = queue.pop_front() {
-            let lib_entry = manager
-                .get(&current_name)
-                .expect("Library must be registered");
+            let Some(lib_entry) = manager.get(&current_name) else {
+                continue;
+            };
             let dylib = lib_entry.dylib();
             scope.push(dylib.clone());
 
             for needed in dylib.needed_libs() {
-                debug_assert!(
-                    manager.contains(needed),
-                    "Dependency [{}] of [{}] must be registered",
-                    needed,
-                    current_name
-                );
+                if !manager.contains(needed) {
+                    continue;
+                }
                 if !visited.contains(needed) {
                     visited.insert(needed.to_owned());
                     queue.push_back(needed.to_owned());
                 }
             }
         }
-        manager
-            .get_mut(root_name)
-            .expect("Root library must be registered")
-            .set_deps(Arc::from(scope));
+        if let Some(entry) = manager.get_mut(root_name) {
+            entry.set_deps(Arc::from(scope));
+        }
     }
 }
 

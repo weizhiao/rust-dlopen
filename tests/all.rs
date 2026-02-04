@@ -170,3 +170,31 @@ fn thread_local() {
     let thread_local = unsafe { lib.get::<fn()>("thread_local").unwrap() };
     thread_local();
 }
+
+#[test]
+fn linker_script() {
+    compile();
+    let lib_dir = PathBuf::from(lib_path("libexample.so"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let script_path = lib_dir.join("test_script.so");
+    std::fs::write(&script_path, "GROUP ( libexample.so )").unwrap();
+
+    let lib = ElfLibrary::dlopen(script_path.to_str().unwrap(), OpenFlags::RTLD_NOW).unwrap();
+    assert!(lib.name().contains("libexample.so"));
+}
+
+#[test]
+fn linker_script_as_needed() {
+    compile();
+    let lib_dir = PathBuf::from(lib_path("libexample.so"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let script_path = lib_dir.join("test_script_as_needed.so");
+    std::fs::write(&script_path, "GROUP ( AS_NEEDED ( libexample.so ) )").unwrap();
+
+    let lib = ElfLibrary::dlopen(script_path.to_str().unwrap(), OpenFlags::RTLD_NOW).unwrap();
+    assert!(lib.name().contains("libexample.so"));
+}

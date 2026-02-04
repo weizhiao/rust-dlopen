@@ -13,6 +13,9 @@ cfg_if::cfg_if! {
         pub(crate) fn read_file(_path: &str) -> crate::Result<alloc::boxed::Box<[u8]>> {
             Err(crate::Error::Unsupported)
         }
+        pub(crate) fn read_file_limit(_path: &str, _limit: usize) -> crate::Result<alloc::boxed::Box<[u8]>> {
+            Err(crate::Error::Unsupported)
+        }
         pub(crate) unsafe fn get_r_debug() -> *mut GDBDebug {
             core::ptr::null_mut()
         }
@@ -54,8 +57,8 @@ pub(crate) unsafe fn find_r_debug(
     // 2. Try to find DT_DEBUG in dynamic section
     if let (Some(bias), Some(phdr)) = (load_bias, dynamic_phdr) {
         let mut cur = (bias.wrapping_add(phdr.p_vaddr as usize)) as *const ElfDyn;
-        while !cur.is_null() && unsafe { (*cur).d_tag } != DT_NULL as _ {
-            if unsafe { (*cur).d_tag } == DT_DEBUG as _ {
+        while !cur.is_null() && unsafe { (*cur).d_tag } != DT_NULL {
+            if unsafe { (*cur).d_tag } == DT_DEBUG {
                 let ptr = unsafe { (*cur).d_un as *mut GDBDebug };
                 if !ptr.is_null() && unsafe { (*ptr).version } != 0 {
                     return ptr;
@@ -76,8 +79,8 @@ pub(crate) unsafe fn find_r_debug(
         };
         if let Some(phdr) = phdrs.iter().find(|p| p.p_type == PT_DYNAMIC) {
             let mut cur = (interpreter_base.wrapping_add(phdr.p_vaddr as usize)) as *const ElfDyn;
-            while !cur.is_null() && unsafe { (*cur).d_tag } != DT_NULL as _ {
-                if unsafe { (*cur).d_tag } == DT_DEBUG as _ {
+            while !cur.is_null() && unsafe { (*cur).d_tag } != DT_NULL {
+                if unsafe { (*cur).d_tag } == DT_DEBUG {
                     let ptr = unsafe { (*cur).d_un as *mut GDBDebug };
                     if !ptr.is_null() && unsafe { (*ptr).version } != 0 {
                         return ptr;

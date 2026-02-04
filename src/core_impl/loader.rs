@@ -1,6 +1,7 @@
 use crate::core_impl::register::global_find;
 use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
+use crate::utils::linker_script::get_linker_script_libs;
 use crate::{OpenFlags, Result, error::find_symbol_error};
 use alloc::{
     boxed::Box,
@@ -26,6 +27,11 @@ use elf_loader::{
 pub(crate) type ElfDylib = RawDylib<ExtraData>;
 pub(crate) type LoadedDylib = LoadedCore<ExtraData>;
 pub(crate) type CoreComponentRef = ElfCoreRef<ExtraData>;
+
+pub(crate) enum LoadResult {
+    Dylib(ElfDylib),
+    Script(Vec<String>),
+}
 
 /// Searches for a symbol in a list of relocated libraries.
 ///
@@ -60,7 +66,8 @@ pub(crate) fn create_lazy_scope(
 
         let local_find = || {
             deps_weak.iter().find_map(|dep| unsafe {
-                let lib = LoadedDylib::from_core(dep.upgrade().unwrap());
+                let core = dep.upgrade()?;
+                let lib = LoadedDylib::from_core(core);
                 lib.get::<()>(name).map(|sym| {
                     log::trace!(
                         "Lazy Binding: find symbol [{}] from [{}] in local scope ",
@@ -154,23 +161,41 @@ pub struct ElfLibrary {
 
 impl Debug for ElfLibrary {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Dylib")
-            .field("inner", &self.inner)
-            .finish()
+        f.debug_struct("Dylib").field("inner", &self.inner).finish()
     }
 }
 
 impl ElfLibrary {
-    /// Find and load a elf dynamic library from path.
-    #[inline]
-    pub(crate) fn from_file(path: impl AsRef<str>) -> Result<ElfDylib> {
-        let file = ElfFile::from_path(path.as_ref())?;
+    pub(crate) fn load(path: &str, content: Option<&[u8]>) -> Result<LoadResult> {
+        if let Some(bytes) = content {
+            if bytes.starts_with(b"\x7fELF") {
+                let dylib = Self::from_binary(bytes, path)?;
+                Ok(LoadResult::Dylib(dylib))
+            } else {
+                let libs = get_linker_script_libs(bytes);
+                Ok(LoadResult::Script(libs))
+            }
+        } else {
+            let header = crate::os::read_file_limit(path, 64)?;
+            if header.starts_with(b"\x7fELF") {
+                let dylib = Self::from_file(path)?;
+                Ok(LoadResult::Dylib(dylib))
+            } else {
+                let content = crate::os::read_file(path)?;
+                let libs = get_linker_script_libs(&content);
+                Ok(LoadResult::Script(libs))
+            }
+        }
+    }
+
+    fn from_file(path: impl AsRef<str>) -> Result<ElfDylib> {
+        let path_ref = path.as_ref();
+        let file = ElfFile::from_path(path_ref)?;
         from_impl(file)
     }
 
     /// Load a elf dynamic library from bytes.
-    #[inline]
-    pub(crate) fn from_binary(bytes: &[u8], path: impl AsRef<str>) -> Result<ElfDylib> {
+    fn from_binary(bytes: &[u8], path: impl AsRef<str>) -> Result<ElfDylib> {
         let file = ElfBinary::new(path.as_ref(), bytes);
         from_impl(file)
     }

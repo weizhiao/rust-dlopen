@@ -41,6 +41,10 @@ fn get_auxv(target_type: usize) -> usize {
 }
 
 pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
+    read_file_limit(path, usize::MAX)
+}
+
+pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
     let mut path_c = Vec::from(path.as_bytes());
     path_c.push(0);
 
@@ -76,23 +80,25 @@ pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
         };
         let _ = unsafe { syscalls::syscall3(syscalls::Sysno::lseek, fd as usize, 0, SEEK_SET) };
 
-        if file_size > 0 {
-            buffer.reserve_exact(file_size);
+        let read_size = core::cmp::min(file_size, limit);
+
+        if read_size > 0 {
+            buffer.reserve_exact(read_size);
             unsafe {
-                buffer.set_len(file_size);
+                buffer.set_len(read_size);
             }
             let bytes_read = unsafe {
                 syscalls::syscall3(
                     syscalls::Sysno::read,
                     fd as usize,
                     buffer.as_mut_ptr() as usize,
-                    file_size,
+                    read_size,
                 )?
             };
-            if bytes_read != file_size {
+            if bytes_read != read_size {
                 return Err(parse_ld_cache_error("Failed to read complete file"));
             }
-        } else {
+        } else if file_size == 0 {
             let mut temp = [0u8; 1024];
             loop {
                 let bytes_read = unsafe {
@@ -100,13 +106,16 @@ pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
                         syscalls::Sysno::read,
                         fd as usize,
                         temp.as_mut_ptr() as usize,
-                        temp.len(),
+                        core::cmp::min(temp.len(), limit - buffer.len()),
                     )?
                 };
                 if bytes_read == 0 {
                     break;
                 }
                 buffer.extend_from_slice(&temp[..bytes_read]);
+                if buffer.len() >= limit {
+                    break;
+                }
             }
         }
         Ok(buffer.into_boxed_slice())
