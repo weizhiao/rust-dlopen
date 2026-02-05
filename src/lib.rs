@@ -36,9 +36,12 @@
     clippy::redundant_else,
     clippy::redundant_static_lifetimes
 )]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
+
+#[cfg(all(feature = "std", feature = "use-syscall"))]
+compile_error!("feature \"std\" and feature \"use-syscall\" cannot be enabled at the same time");
 
 pub mod api;
 mod core_impl;
@@ -50,6 +53,7 @@ use bitflags::bitflags;
 
 pub use crate::api::dlsym::{dlsym_default, dlsym_next};
 pub use crate::core_impl::loader::ElfLibrary;
+pub use crate::core_impl::traits::AsFilename;
 pub use crate::error::Error;
 pub use elf_loader::image::Symbol;
 

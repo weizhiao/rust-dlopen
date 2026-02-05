@@ -21,6 +21,12 @@ pub enum Error {
     InvalidPath,
     /// The operation is not supported on the current target or without the required feature.
     Unsupported,
+    /// An I/O error occurred.
+    #[cfg(feature = "std")]
+    IO(std::io::Error),
+    /// An I/O error occurred.
+    #[cfg(not(feature = "std"))]
+    IO(String),
 }
 
 impl Display for Error {
@@ -29,11 +35,25 @@ impl Display for Error {
             Error::LoaderError { err } => write!(f, "{err}"),
             Error::FindLibError { msg } => write!(f, "{msg}"),
             Error::FindSymbolError { msg } => write!(f, "{msg}"),
-            Error::IteratorPhdrError { err } => write!(f, "{:?}", err),
-            Error::ParseLdCacheError { msg } => write!(f, "ParseLdCacheError: {msg}"),
-            Error::InvalidPath => write!(f, "InvalidPath"),
-            Error::Unsupported => write!(f, "Unsupported"),
+            Error::IteratorPhdrError { err } => write!(f, "iterator phdr error: {err:?}"),
+            Error::ParseLdCacheError { msg } => write!(f, "{msg}"),
+            Error::InvalidPath => write!(f, "invalid path"),
+            Error::Unsupported => write!(f, "unsupported"),
+            #[cfg(feature = "std")]
+            Error::IO(err) => write!(f, "IO error: {err}"),
+            #[cfg(not(feature = "std"))]
+            Error::IO(msg) => write!(f, "IO error: {msg}"),
         }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {}
+
+#[cfg(feature = "std")]
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Error::IO(value)
     }
 }
 

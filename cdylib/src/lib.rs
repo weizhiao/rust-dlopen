@@ -3,6 +3,8 @@ use std::{
     ptr::null,
 };
 
+pub use dlopen_rs::api::*;
+
 #[ctor::ctor]
 fn init() {
     env_logger::init();

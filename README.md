@@ -1,86 +1,100 @@
-[![](https://img.shields.io/crates/v/dlopen-rs.svg)](https://crates.io/crates/dlopen-rs)
-[![](https://img.shields.io/crates/d/dlopen-rs.svg)](https://crates.io/crates/dlopen-rs)
-[![license](https://img.shields.io/crates/l/dlopen-rs.svg)](https://crates.io/crates/dlopen-rs)
-[![dlopen-rs on docs.rs](https://docs.rs/dlopen-rs/badge.svg)](https://docs.rs/dlopen-rs)
-[![Rust](https://img.shields.io/badge/rust-1.93.0%2B-blue.svg?maxAge=3600)](https://github.com/weizhiao/dlopen_rs)
-[![Build Status](https://github.com/weizhiao/dlopen-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/weizhiao/dlopen-rs/actions)
 # dlopen-rs
 
-English | [中文](README-zh_cn.md)  
+<p align="center">
+  <a href="https://crates.io/crates/dlopen-rs"><img src="https://img.shields.io/crates/v/dlopen-rs.svg" alt="Crates.io"></a>
+  <a href="https://crates.io/crates/dlopen-rs"><img src="https://img.shields.io/crates/d/dlopen-rs.svg" alt="Downloads"></a>
+  <a href="https://docs.rs/dlopen-rs/"><img src="https://docs.rs/dlopen-rs/badge.svg" alt="Docs.rs"></a>
+  <a href="https://github.com/weizhiao/dlopen-rs/actions"><img src="https://github.com/weizhiao/dlopen-rs/actions/workflows/rust.yml/badge.svg" alt="Build Status"></a>
+  <img src="https://img.shields.io/badge/rust-1.93.0%2B-blue.svg" alt="MSRV">
+  <img src="https://img.shields.io/crates/l/dlopen-rs.svg" alt="License">
+</p>
 
-[[Documentation]](https://docs.rs/dlopen-rs/)
+<p align="center">
+  <b>A high-performance, pure-Rust implementation of an ELF dynamic linker.</b>
+</p>
 
-`dlopen-rs` is a dynamic linker fully implemented in Rust, providing a set of Rust-friendly interfaces for manipulating dynamic libraries, as well as C-compatible interfaces consistent with `libc` behavior.
+<p align="center">
+  <a href="README.md">English</a> | <a href="README-zh_cn.md">简体中文</a>
+</p>
 
-## Usage
-You can use `dlopen-rs` as a replacement for `libloading` to load dynamic libraries. It also allows replacing libc's `dlopen`, `dlsym`, `dl_iterate_phdr` and other functions with implementations from `dlopen-rs` using `LD_PRELOAD` without code modifications.
+`dlopen-rs` is a full-featured dynamic linker implemented entirely in Rust. It provides a set of Rust-friendly interfaces for manipulating dynamic libraries, as well as C-compatible interfaces consistent with `libc` behavior.
+
+## 🚀 Key Features
+
+- **Pure Rust:** Zero dependency on C runtime for core loading and linking logic.
+- **`#![no_std]` Support:** Can be used in bare-metal environments, kernels, or embedded systems.
+- **`LD_PRELOAD` Compatible:** Can replace `libc`'s `dlopen`, `dlsym`, and `dl_iterate_phdr` without code modification.
+- **Modern API:** Offers a safe and ergonomic Rust API for dynamic library management.
+
+## 🛠 Usage
+
+### As a Rust Library
+Add `dlopen-rs` to your `Cargo.toml`:
+```toml
+[dependencies]
+dlopen-rs = "0.8.0"
+```
+
+### As an `LD_PRELOAD` Replacement
+
+You can use `dlopen-rs` to intercept standard library calls:
+
 ```shell
-# Compile the library as a dynamic library
+# 1. Compile the compatibility library
 $ cargo build -r -p cdylib
-# Compile test cases
+
+# 2. Compile your application/example
 $ cargo build -r -p dlopen-rs --example preload
-# Replace libc implementations with ours
+
+# 3. Interpose libc implementations
 $ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examples/preload
 ```
 
-## Advantages
-1. Provides support for loading ELF dynamic libraries to #![no_std] targets.
-2. Typically faster than `ld.so` for dynamic library loading and symbol resolution.
-3. Offers Rust-friendly interfaces with ergonomic design.
+## 📊 Architecture Support
 
-## Feature
-| Feature     | Default | Description                                                       |
-| ----------- | ------- | ----------------------------------------------------------------- |
-| use-syscall | No      | Use syscalls to load dynamic libraries from the file system.      |
-| version     | No      | Activate specific versions of symbols for dynamic library loading |
+| Architecture | Load Support | Lazy Binding | Test Status |
+| ------------ | ------------ | ------------ | ----------- |
+| **x86_64**   | ✅            | ✅            | ✅ (CI)      |
+| **aarch64**  | ✅            | ✅            | 🛠️ (Manual)  |
+| **riscv64**  | ✅            | ✅            | 🛠️ (Manual)  |
 
-## Architecture Support
+## 💻 Example
 
-| Arch    | Support | Lazy Binding | Test      |
-| ------- | ------- | ------------ | --------- |
-| x86_64  | ✅       | ✅            | ✅(CI)     |
-| aarch64 | ✅       | ✅            | ✅(Manual) |
-| riscv64 | ✅       | ✅            | ✅(Manual) |
-
-## Examples
-
-The `dlopen` interface is used to load dynamic libraries, and the `dl_iterate_phdr` interface is used to iterate through the already loaded dynamic libraries. Additionally, this library uses the `log` crate, and you can use your preferred library to output log information to view the workflow of `dlopen-rs`. In the examples of this library, the `env_logger` crate is used.
 ```rust
-use dlopen_rs::ELFLibrary;
-use std::path::Path;
+use dlopen_rs::{ElfLibrary, OpenFlags, Result};
 
-fn main() {
-    std::env::set_var("RUST_LOG", "trace");
-    env_logger::init();
-    dlopen_rs::init();
-    let path = Path::new("./target/release/libexample.so");
-    let libexample =
-        ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL | OpenFlags::RTLD_LAZY).unwrap();
-    let add = unsafe { libexample.get::<fn(i32, i32) -> i32>("add").unwrap() };
-    println!("{}", add(1, 1));
+fn main() -> Result<()> {
+    // 1. Load the library
+    let lib = ElfLibrary::dlopen("./target/release/libexample.so", OpenFlags::RTLD_LAZY)?;
 
-    let print = unsafe { libexample.get::<fn(&str)>("print").unwrap() };
-    print("dlopen-rs: hello world");
-	
-    let dl_info = ElfLibrary::dladdr(print.into_raw() as usize).unwrap();
-    println!("{:?}", dl_info);
+    // 2. Get and call a simple function: fn(i32, i32) -> i32
+    let add = unsafe { lib.get::<fn(i32, i32) -> i32>("add")? };
+    println!("add(1, 1) = {}", add(1, 1));
 
-    ElfLibrary::dl_iterate_phdr(|info| {
-        println!(
-            "iterate dynamic library: {}",
-            unsafe { CStr::from_ptr(info.dlpi_name).to_str().unwrap() }
-        );
-        Ok(())
-    })
-    .unwrap();
+    Ok(())
 }
 ```
 
-## Minimum Supported Rust Version
-Rust 1.93 or higher.
+## ⚙️ Feature Flags
 
-## Supplement
-If you encounter any issues during use, feel free to raise them on GitHub. We warmly welcome everyone to contribute code to help improve the functionality of dlopen-rs. 😊
+| Feature       | Default | Description                                                              |
+| ------------- | ------- | ------------------------------------------------------------------------ |
+| `use-syscall` | ❌       | Uses direct syscalls to load libraries (useful for `no_std`).            |
+| `version`     | ❌       | Enables support for ELF symbol versioning.                               |
+| `std`         | ✅       | Enables standard library integration. Disable for `no_std` environments. |
 
-## Troubleshooting GDB
-[See the dedicated page.](TroubleshootingGdb.md)
+## ⚖️ License
+
+Licensed under the [Apache License 2.0](https://www.google.com/search?q=LICENSE).
+
+## 🤝 Contribution
+
+Contributions are welcome! If you encounter issues or have ideas for performance improvements, please open an Issue or PR. For specific GDB-related debugging issues, please refer to [TroubleshootingGdb.md](TroubleshootingGdb.md).
+
+<a href="https://github.com/weizhiao/rust-dlopen/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=weizhiao/rust-dlopen" alt="Project Contributors" />
+</a>
+
+---
+
+**Minimum Supported Rust Version (MSRV):** 1.93.0 or higher.

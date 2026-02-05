@@ -173,12 +173,13 @@ fn thread_local() {
 #[test]
 fn linker_script() {
     compile();
-    let lib_dir = PathBuf::from(lib_path("libexample.so"))
+    let path = lib_path("libexample.so");
+    let lib_dir = PathBuf::from(&path)
         .parent()
         .unwrap()
         .to_path_buf();
     let script_path = lib_dir.join("test_script.so");
-    std::fs::write(&script_path, "GROUP ( libexample.so )").unwrap();
+    std::fs::write(&script_path, format!("GROUP ( {path} )")).unwrap();
 
     let lib = ElfLibrary::dlopen(script_path.to_str().unwrap(), OpenFlags::RTLD_NOW).unwrap();
     assert!(lib.name().contains("libexample.so"));
@@ -187,12 +188,13 @@ fn linker_script() {
 #[test]
 fn linker_script_as_needed() {
     compile();
-    let lib_dir = PathBuf::from(lib_path("libexample.so"))
+    let path = lib_path("libexample.so");
+    let lib_dir = PathBuf::from(&path)
         .parent()
         .unwrap()
         .to_path_buf();
     let script_path = lib_dir.join("test_script_as_needed.so");
-    std::fs::write(&script_path, "GROUP ( AS_NEEDED ( libexample.so ) )").unwrap();
+    std::fs::write(&script_path, format!("GROUP ( AS_NEEDED ( {path} ) )")).unwrap();
 
     let lib = ElfLibrary::dlopen(script_path.to_str().unwrap(), OpenFlags::RTLD_NOW).unwrap();
     assert!(lib.name().contains("libexample.so"));

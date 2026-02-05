@@ -1,4 +1,5 @@
 use crate::core_impl::register::global_find;
+use crate::core_impl::traits::AsFilename;
 use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
 use crate::utils::linker_script::get_linker_script_libs;
@@ -188,15 +189,15 @@ impl ElfLibrary {
         }
     }
 
-    fn from_file(path: impl AsRef<str>) -> Result<ElfDylib> {
-        let path_ref = path.as_ref();
+    fn from_file(path: impl AsFilename) -> Result<ElfDylib> {
+        let path_ref = path.as_filename();
         let file = ElfFile::from_path(path_ref)?;
         from_impl(file)
     }
 
     /// Load a elf dynamic library from bytes.
-    fn from_binary(bytes: &[u8], path: impl AsRef<str>) -> Result<ElfDylib> {
-        let file = ElfBinary::new(path.as_ref(), bytes);
+    fn from_binary(bytes: &[u8], path: impl AsFilename) -> Result<ElfDylib> {
+        let file = ElfBinary::new(path.as_filename(), bytes);
         from_impl(file)
     }
 }

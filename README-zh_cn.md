@@ -6,78 +6,101 @@
 [![Build Status](https://github.com/weizhiao/dlopen-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/weizhiao/dlopen-rs/actions)
 # dlopen-rs
 
-[文档](https://docs.rs/dlopen-rs/)
+<p align="center">
+  <a href="https://crates.io/crates/dlopen-rs"><img src="https://img.shields.io/crates/v/dlopen-rs.svg" alt="Crates.io"></a>
+  <a href="https://crates.io/crates/dlopen-rs"><img src="https://img.shields.io/crates/d/dlopen-rs.svg" alt="Downloads"></a>
+  <a href="https://docs.rs/dlopen-rs/"><img src="https://docs.rs/dlopen-rs/badge.svg" alt="Docs.rs"></a>
+  <a href="https://github.com/weizhiao/dlopen-rs/actions"><img src="https://github.com/weizhiao/dlopen-rs/actions/workflows/rust.yml/badge.svg" alt="Build Status"></a>
+  <img src="https://img.shields.io/badge/rust-1.93.0%2B-blue.svg" alt="MSRV">
+  <img src="https://img.shields.io/crates/l/dlopen-rs.svg" alt="License">
+</p>
 
-`dlopen-rs`是一个完全使用Rust实现的动态链接器，提供了一组对Rust友好的操作动态库的接口，也提供了一组与libc中行为一致的C接口。
+<p align="center">
+  <b>高性能、纯 Rust 实现的 ELF 动态链接器。</b>
+</p>
 
-## 用法
-你可以使用`dlopen-rs`替换`libloading`来加载动态库，也可以在不修改任何代码的情况下，利用`LD_PRELOAD`将libc中的`dlopen`，`dlsym`，`dl_iterate_phdr`等函数替换为`dlopen-rs`中的实现。
+<p align="center">
+  <a href="README.md">English</a> | <a href="README-zh_cn.md">简体中文</a>
+</p>
 
-```shell
-# 将本库编译成动态库形式
-cargo build -r -p cdylib
-# 编译测试用例
-cargo build -r -p dlopen-rs --example preload
-# 使用本库中的实现替换libc中的实现
-RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examples/preload
+`dlopen-rs` 是一个功能齐全的动态链接器，完全使用 Rust 实现。它为操作动态库提供了一组 Rust 友好的接口，同时也提供了一组与 `libc` 行为一致的 C 兼容接口。
+
+## 🚀 核心特性
+
+- **纯 Rust 实现：** 核心加载和链接逻辑对 C 运行时零依赖。
+- **`#![no_std]` 支持：** 可用于裸机环境、内核或嵌入式系统。
+- **`LD_PRELOAD` 兼容：** 可以在不修改代码的情况下替换 `libc` 的 `dlopen`、`dlsym` 和 `dl_iterate_phdr`。
+- **现代 API：** 为动态库管理提供安全且符合人体工程学的 Rust API。
+
+## 🛠 用法
+
+### 作为 Rust 库
+在你的 `Cargo.toml` 中添加 `dlopen-rs`：
+```toml
+[dependencies]
+dlopen-rs = "0.8.0"
 ```
 
-## 优势
-1. 能够为 #![no_std] 目标提供加载 `ELF` 动态库的支持。
-2. 大多数情况下有比`ld.so`更快的速度。（加载动态库和获取符号）
-3. 提供了对Rust友好的接口。
+### 作为 `LD_PRELOAD` 替代品
 
-## 特性
+你可以使用 `dlopen-rs` 来拦截标准库调用：
 
-| 特性        | 是否默认开启 | 描述                                 |
-| ----------- | ------------ | ------------------------------------ |
-| version     | 否           | 在寻找符号时使用符号的版本号         |
-| use-syscall | 否           | 使用系统调用从文件系统中加载动态库。 |
+```shell
+# 1. 编译兼容库
+$ cargo build -r -p cdylib
 
-## 指令集支持
+# 2. 编译你的应用程序/示例
+$ cargo build -r -p dlopen-rs --example preload
 
-| 指令集  | 支持 | 延迟绑定 | 测试      |
-| ------- | ---- | -------- | --------- |
-| x86_64  | ✅    | ✅        | ✅(CI)     |
-| aarch64 | ✅    | ✅        | ✅(Manual) |
-| riscv64 | ✅    | ✅        | ✅(Manual) |
+# 3. 替换 libc 的实现
+$ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examples/preload
+```
 
-## 示例
+## 📊 架构支持
 
-使用`dlopen`接口加载动态库，使用`dl_iterate_phdr`接口遍历已经加载的动态库。此外本库使用了`log`库，你可以使用自己喜欢的库输出日志信息，来查看dlopen-rs的工作流程，本库的例子中使用的是`env_logger`库。
+| 架构        | 加载支持 | 延迟绑定 | 测试状态 |
+| ----------- | -------- | -------- | -------- |
+| **x86_64**  | ✅        | ✅        | ✅ (CI)   |
+| **aarch64** | ✅        | ✅        | 🛠️ (手动) |
+| **riscv64** | ✅        | ✅        | 🛠️ (手动) |
+
+## 💻 示例
+
 ```rust
-use dlopen_rs::{ElfLibrary, OpenFlags};
-use std::path::Path;
+use dlopen_rs::{ElfLibrary, OpenFlags, Result};
 
-fn main() {
-    std::env::set_var("RUST_LOG", "trace");
-    env_logger::init();
-    dlopen_rs::init();
-    let path = Path::new("./target/release/libexample.so");
-    let libexample =
-        ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL | OpenFlags::RTLD_LAZY).unwrap();
-    let add = unsafe { libexample.get::<fn(i32, i32) -> i32>("add").unwrap() };
-    println!("{}", add(1, 1));
+fn main() -> Result<()> {
+    // 1. 加载库
+    let lib = ElfLibrary::dlopen("./target/release/libexample.so", OpenFlags::RTLD_LAZY)?;
 
-    let print = unsafe { libexample.get::<fn(&str)>("print").unwrap() };
-    print("dlopen-rs: hello world");
+    // 2. 获取并调用一个简单的函数: fn(i32, i32) -> i32
+    let add = unsafe { lib.get::<fn(i32, i32) -> i32>("add")? };
+    println!("add(1, 1) = {}", add(1, 1));
 
-    let dl_info = ElfLibrary::dladdr(print.into_raw() as usize).unwrap();
-    println!("{:?}", dl_info);
-
-    ElfLibrary::dl_iterate_phdr(|info| {
-        println!(
-            "iterate dynamic library: {}",
-            unsafe { CStr::from_ptr(info.dlpi_name).to_str().unwrap() }
-        );
-        Ok(())
-    })
-    .unwrap();
+    Ok(())
 }
 ```
 
-## 最低编译器版本支持
-Rust 1.93及以上
+## ⚙️ 特性标志 (Feature Flags)
 
-## 补充
-如果在使用过程中遇到问题可以在 GitHub 上提出问题，十分欢迎大家为本库提交代码一起完善dlopen-rs的功能。😊
+| 特性          | 默认开启 | 描述                                           |
+| ------------- | -------- | ---------------------------------------------- |
+| `use-syscall` | ❌        | 直接使用系统调用加载库（适用于 `no_std`）。    |
+| `version`     | ❌        | 启用对 ELF 符号版本的支持。                    |
+| `std`         | ✅        | 启用标准库集成。在 `no_std` 环境中请禁用此项。 |
+
+## ⚖️ 许可证
+
+基于 [Apache License 2.0](LICENSE) 许可。
+
+## 🤝 贡献
+
+欢迎贡献！如果你遇到问题或有性能改进的想法，请开启 Issue 或 PR。对于特定的 GDB 相关调试问题，请参考 [TroubleshootingGdb.md](TroubleshootingGdb.md)。
+
+<a href="https://github.com/weizhiao/dlopen-rs/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=weizhiao/dlopen-rs" alt="Project Contributors" />
+</a>
+
+---
+
+**最低支持 Rust 版本 (MSRV):** 1.93.0 或更高。

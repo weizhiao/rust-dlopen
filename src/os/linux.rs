@@ -1,12 +1,12 @@
-use crate::error::parse_ld_cache_error;
 use crate::utils::debug::GDBDebug;
 use crate::{Error, Result};
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 impl From<syscalls::Errno> for Error {
     fn from(value: syscalls::Errno) -> Self {
-        parse_ld_cache_error(value)
+        Error::IO(value.to_string())
     }
 }
 
@@ -78,11 +78,12 @@ pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
         let file_size = unsafe {
             syscalls::syscall3(syscalls::Sysno::lseek, fd as usize, 0, SEEK_END).unwrap_or(0)
         };
-        let _ = unsafe { syscalls::syscall3(syscalls::Sysno::lseek, fd as usize, 0, SEEK_SET) };
 
-        let read_size = core::cmp::min(file_size, limit);
-
-        if read_size > 0 {
+        if file_size > 0
+            && unsafe { syscalls::syscall3(syscalls::Sysno::lseek, fd as usize, 0, SEEK_SET) }
+                .is_ok()
+        {
+            let read_size = core::cmp::min(file_size, limit);
             buffer.reserve_exact(read_size);
             unsafe {
                 buffer.set_len(read_size);
@@ -96,26 +97,33 @@ pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
                 )?
             };
             if bytes_read != read_size {
-                return Err(parse_ld_cache_error("Failed to read complete file"));
+                return Err(Error::IO(alloc::string::String::from(
+                    "Failed to read complete file",
+                )));
             }
-        } else if file_size == 0 {
+        } else {
+            if file_size == 0 {
+                let _ =
+                    unsafe { syscalls::syscall3(syscalls::Sysno::lseek, fd as usize, 0, SEEK_SET) };
+            }
             let mut temp = [0u8; 1024];
             loop {
+                let to_read = core::cmp::min(temp.len(), limit - buffer.len());
+                if to_read == 0 {
+                    break;
+                }
                 let bytes_read = unsafe {
                     syscalls::syscall3(
                         syscalls::Sysno::read,
                         fd as usize,
                         temp.as_mut_ptr() as usize,
-                        core::cmp::min(temp.len(), limit - buffer.len()),
+                        to_read,
                     )?
                 };
                 if bytes_read == 0 {
                     break;
                 }
                 buffer.extend_from_slice(&temp[..bytes_read]);
-                if buffer.len() >= limit {
-                    break;
-                }
             }
         }
         Ok(buffer.into_boxed_slice())

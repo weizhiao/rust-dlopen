@@ -3,6 +3,7 @@ use crate::{
     core_impl::{
         loader::{DylibExt, ElfDylib, ElfLibrary, LoadResult, LoadedDylib, create_lazy_scope},
         register::{DylibState, GlobalDylib, MANAGER, Manager, register},
+        traits::AsFilename,
     },
     error::find_lib_error,
     utils::ld_cache::LdCache,
@@ -43,14 +44,6 @@ impl ElfPath {
 
     fn as_str(&self) -> &str {
         &self.path
-    }
-
-    fn parent_str(&self) -> &str {
-        self.path.rsplit_once('/').map(|(d, _)| d).unwrap_or(".")
-    }
-
-    fn shortname(&self) -> &str {
-        self.path.rsplit_once('/').map_or(&self.path, |(_, n)| n)
     }
 }
 
@@ -94,18 +87,18 @@ impl ElfLibrary {
     /// let path = "/path/to/library.so";
     /// let lib = ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL).expect("Failed to load library");
     /// ```
-    pub fn dlopen(path: impl AsRef<str>, flags: OpenFlags) -> Result<ElfLibrary> {
-        dlopen_impl(path.as_ref(), flags, None)
+    pub fn dlopen(path: impl AsFilename, flags: OpenFlags) -> Result<ElfLibrary> {
+        dlopen_impl(path.as_filename(), flags, None)
     }
 
     /// Load a shared library from bytes. It is the same as dlopen. However, it can also be used in the no_std environment,
     /// and it will look for dependent libraries in those manually opened dynamic libraries.
     pub fn dlopen_from_binary(
         bytes: &[u8],
-        path: impl AsRef<str>,
+        path: impl AsFilename,
         flags: OpenFlags,
     ) -> Result<ElfLibrary> {
-        dlopen_impl(path.as_ref(), flags, Some(bytes))
+        dlopen_impl(path.as_filename(), flags, Some(bytes))
     }
 }
 
@@ -185,6 +178,11 @@ impl<'a> OpenContext<'a> {
 
             match entry {
                 Some(lib) if lib.state.is_relocated() => return Some(lib),
+                Some(lib) if self.added_names.iter().any(|n| n == shortname) => {
+                    // It's a library being loaded by the current thread in this dlopen session.
+                    // We must not wait, otherwise we deadlock.
+                    return Some(lib);
+                }
                 Some(_) => {
                     // It's being loaded or relocated by another thread
                     drop(self.lock.take());
@@ -216,25 +214,32 @@ impl<'a> OpenContext<'a> {
         relocated
     }
 
+    fn try_use_existing(&mut self, shortname: &str) -> bool {
+        // If it's already in our current dependency chain, we don't need to wait or promote.
+        // It might be one of our 'added_names' (newly loaded) or an existing one we already found.
+        if self.dep_libs.iter().any(|d| d.shortname() == shortname) {
+            return true;
+        }
+
+        if let Some(lib) = self.wait_for_library(shortname) {
+            // Found an existing library from a PREVIOUS dlopen (already relocated)
+            // or one being loaded by another thread (we waited for it).
+            self.dep_libs.push(lib.dylib());
+            log::debug!("Use an existing dylib: [{}]", lib.shortname());
+            self.lock
+                .as_mut()
+                .expect("Lock must be held")
+                .promote(shortname, self.flags);
+            return true;
+        }
+        false
+    }
+
     fn load_and_register(
         &mut self,
         p: &ElfPath,
         bytes: Option<&[u8]>,
     ) -> Result<Option<Vec<String>>> {
-        let shortname = p.shortname();
-
-        if let Some(lib) = self.wait_for_library(shortname) {
-            if !self.dep_libs.iter().any(|d| d.shortname() == shortname) {
-                self.dep_libs.push(lib.dylib());
-                log::debug!("Use an existing dylib: [{}]", lib.shortname());
-                self.lock
-                    .as_mut()
-                    .expect("Lock must be held")
-                    .promote(shortname, self.flags);
-            }
-            return Ok(None);
-        }
-
         match ElfLibrary::load(p.as_str(), bytes)? {
             LoadResult::Dylib(lib) => {
                 self.register_new(lib);
@@ -457,6 +462,11 @@ impl<'a> OpenContext<'a> {
         lib_name: &str,
         bytes: Option<&[u8]>,
     ) -> Result<()> {
+        let shortname = lib_name.rsplit_once('/').map_or(lib_name, |(_, name)| name);
+        if self.try_use_existing(shortname) {
+            return Ok(());
+        }
+
         // 1. Absolute or relative path (contains '/')
         if lib_name.contains('/') {
             if let Ok(path) = ElfPath::from_str(lib_name) {
@@ -516,21 +526,8 @@ impl<'a> OpenContext<'a> {
         let Some(libs) = self.load_and_register(path, bytes)? else {
             return Ok(());
         };
-        let parent = path.parent_str();
         for lib in libs {
-            if lib.starts_with('/') {
-                self.find_library(&[], &[], &lib, None)?;
-            } else {
-                // Try relative to the script first
-                let rel_path = format!("{}/{}", parent, lib);
-                if let Ok(p) = ElfPath::from_str(&rel_path) {
-                    if self.try_load_internal(rpath, runpath, &p, None).is_ok() {
-                        continue;
-                    }
-                }
-                // If not found, search in the given search paths
-                self.find_library(rpath, runpath, &lib, None)?;
-            }
+            self.find_library(rpath, runpath, &lib, None)?;
         }
         Ok(())
     }
@@ -613,7 +610,7 @@ fn parse_path_list(s: &str) -> Box<[ElfPath]> {
 /// It is the same as `dlopen`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const c_void {
-    let mut lib = if filename.is_null() {
+    let lib = if filename.is_null() {
         ElfLibrary::this()
     } else {
         let flags = OpenFlags::from_bits_retain(flags as _);
@@ -627,8 +624,5 @@ pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *const
             return core::ptr::null();
         }
     };
-    let Some(deps) = core::mem::take(&mut lib.deps) else {
-        return core::ptr::null();
-    };
-    Box::into_raw(Box::new(deps)) as _
+    Box::into_raw(Box::new(lib)) as _
 }

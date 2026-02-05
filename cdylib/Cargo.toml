@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies.dlopen-rs]
 path = "../"
 default-features = false
-features = ["use-syscall"]
 
 [dependencies]
 ctor = { workspace = true }

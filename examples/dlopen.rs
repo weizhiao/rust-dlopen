@@ -1,46 +1,17 @@
-use dlopen_rs::{ElfLibrary, OpenFlags};
-use std::path::Path;
+use dlopen_rs::{ElfLibrary, OpenFlags, Result};
 
-fn main() {
-    unsafe { std::env::set_var("RUST_LOG", "trace") };
+fn main() -> Result<()> {
+    if std::env::var("RUST_LOG").is_err() {
+        unsafe { std::env::set_var("RUST_LOG", "trace") };
+    }
     env_logger::init();
-    let path = Path::new("./target/release/libexample.so");
-    let libexample1 =
-        ElfLibrary::dlopen(path.as_os_str().to_str().unwrap(), OpenFlags::RTLD_LAZY).unwrap();
-    let add = unsafe { libexample1.get::<fn(i32, i32) -> i32>("add").unwrap() };
-    println!("{}", add(1, 1));
 
-    let print = unsafe { libexample1.get::<fn(&str)>("print").unwrap() };
-    print("dlopen-rs: hello world");
+    // 1. Load the library
+    let lib = ElfLibrary::dlopen("./target/release/libexample.so", OpenFlags::RTLD_LAZY)?;
 
-    let args = unsafe { libexample1.get::<fn()>("args") }.unwrap();
-    args();
+    // 2. Get and call a simple function: fn(i32, i32) -> i32
+    let add = unsafe { lib.get::<fn(i32, i32) -> i32>("add")? };
+    println!("add(1, 1) = {}", add(1, 1));
 
-    drop(libexample1);
-
-    let bytes = std::fs::read(path).unwrap();
-    let libexample2 = ElfLibrary::dlopen_from_binary(
-        &bytes,
-        "./target/release/libexample.so",
-        OpenFlags::RTLD_GLOBAL | OpenFlags::RTLD_NODELETE,
-    )
-    .unwrap();
-
-    let backtrace = unsafe { libexample2.get::<fn()>("backtrace").unwrap() };
-    backtrace();
-
-    let panic = unsafe { libexample2.get::<fn()>("panic").unwrap() };
-    panic();
-
-    let thread_local = unsafe { libexample2.get::<fn()>("thread_local").unwrap() };
-    thread_local();
-
-    let dl_info = ElfLibrary::dladdr(backtrace.into_raw() as usize).unwrap();
-    println!("{:?}", dl_info);
-
-    ElfLibrary::dl_iterate_phdr(|info| {
-        println!("iterate dynamic library: {}", info.name());
-        Ok(())
-    })
-    .unwrap();
+    Ok(())
 }

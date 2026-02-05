@@ -1,6 +1,6 @@
 [package]
 name = "dlopen-rs"
-version = "0.7.3"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.93.0"
 authors = ["wzhao <1207410841@qq.com>"]
@@ -44,7 +44,8 @@ cfg-if = "1.0.0"
 ctor = { workspace = true }
 
 [features]
-default = []
+default = ["std"]
+std = ["spin/std"]
 # activate specific versions of symbols for dynamic library loading
 version = ["elf_loader/version"]
 use-syscall = ["elf_loader/use-syscall"]
