@@ -14,7 +14,6 @@
 //! # use dlopen_rs::{ElfLibrary, OpenFlags};
 //!
 //! fn main(){
-//!     dlopen_rs::init();
 //!     let path = "./target/release/libexample.so";
 //!     let libexample = ElfLibrary::dlopen(path, OpenFlags::RTLD_LOCAL | OpenFlags::RTLD_LAZY).unwrap();
 //!
@@ -50,7 +49,6 @@ mod utils;
 use bitflags::bitflags;
 
 pub use crate::api::dlsym::{dlsym_default, dlsym_next};
-pub use crate::core_impl::init::init;
 pub use crate::core_impl::loader::ElfLibrary;
 pub use crate::error::Error;
 pub use elf_loader::image::Symbol;

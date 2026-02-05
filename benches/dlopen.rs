@@ -3,7 +3,6 @@ use dlopen_rs::{ElfLibrary, OpenFlags};
 use libloading::Library;
 
 fn load(c: &mut Criterion) {
-    dlopen_rs::init();
     let path = "./target/release/libexample.so";
     c.bench_function("dlopen-rs:dlopen", |b| {
         b.iter(|| {

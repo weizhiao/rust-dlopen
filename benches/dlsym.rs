@@ -3,7 +3,6 @@ use dlopen_rs::{ElfLibrary, OpenFlags};
 use libloading::Library;
 
 fn get_symbol(c: &mut Criterion) {
-    dlopen_rs::init();
     let path = "./target/release/libexample.so";
     let lib1 = ElfLibrary::dlopen(path, OpenFlags::RTLD_LAZY).unwrap();
     let lib2 = unsafe { Library::new(path).unwrap() };

@@ -366,7 +366,8 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut 
     0
 }
 
-pub fn init() {
+#[ctor::ctor]
+fn init() {
     log::info!("init: starting initialization");
     ONCE.call_once(|| {
         if let Some(debug) = get_debug_struct() {

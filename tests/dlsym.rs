@@ -21,7 +21,6 @@ const PACKAGE_NAME: [&str; 1] = ["example_dylib"];
 fn compile() {
     static ONCE: ::std::sync::Once = ::std::sync::Once::new();
     ONCE.call_once(|| {
-        dlopen_rs::init();
         let arch = consts::ARCH;
         if arch.contains("x86_64") {
             TARGET_TRIPLE

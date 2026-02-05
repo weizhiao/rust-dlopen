@@ -4,9 +4,6 @@ use std::path::Path;
 fn main() {
     unsafe { std::env::set_var("RUST_LOG", "trace") };
     env_logger::init();
-    println!("Calling dlopen_rs::init()");
-    dlopen_rs::init();
-    println!("dlopen_rs::init() finished");
     let path = Path::new("./target/release/libexample.so");
     let libexample1 =
         ElfLibrary::dlopen(path.as_os_str().to_str().unwrap(), OpenFlags::RTLD_LAZY).unwrap();

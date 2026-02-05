@@ -23,7 +23,6 @@ fn compile() {
     ONCE.call_once(|| {
         unsafe { std::env::set_var("RUST_LOG", "trace") };
         env_logger::init();
-        dlopen_rs::init();
         let arch = consts::ARCH;
         if arch.contains("x86_64") {
             TARGET_TRIPLE
