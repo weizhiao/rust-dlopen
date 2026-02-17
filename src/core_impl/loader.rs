@@ -92,7 +92,7 @@ pub(crate) fn create_lazy_scope(
     })
 }
 
-fn from_impl<'a, I>(object: I) -> Result<ElfDylib>
+fn from_impl<'a, I>(object: I, file_path: Option<&str>) -> Result<ElfDylib>
 where
     I: ElfReader + elf_loader::input::IntoElfReader<'a>,
 {
@@ -146,6 +146,17 @@ where
     unsafe { add_debug_link_map(link_map.as_mut()) };
     user_data.link_map = Some(link_map);
     user_data.c_name = Some(c_name);
+    
+    // Get file identity (inode) if path is provided
+    if let Some(path) = file_path {
+        if let Ok(identity) = crate::os::get_file_inode(path) {
+            user_data.file_identity = Some(identity);
+            log::debug!("Stored file identity for [{}]: dev={}, ino={}", path, identity.dev, identity.ino);
+        } else {
+            log::warn!("Failed to get file identity for [{}]", path);
+        }
+    }
+    
     Ok(dylib)
 }
 
@@ -192,13 +203,14 @@ impl ElfLibrary {
     fn from_file(path: impl AsFilename) -> Result<ElfDylib> {
         let path_ref = path.as_filename();
         let file = ElfFile::from_path(path_ref)?;
-        from_impl(file)
+        from_impl(file, Some(path_ref))
     }
 
     /// Load a elf dynamic library from bytes.
     fn from_binary(bytes: &[u8], path: impl AsFilename) -> Result<ElfDylib> {
         let file = ElfBinary::new(path.as_filename(), bytes);
-        from_impl(file)
+        // For binary loads, we don't have a physical file path to stat
+        from_impl(file, None)
     }
 }
 

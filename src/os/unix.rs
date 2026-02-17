@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::core_impl::types::FileIdentity;
 use crate::utils::debug::GDBDebug;
 use alloc::boxed::Box;
 
@@ -40,6 +41,15 @@ mod std_impl {
         let n = file.read(&mut buf)?;
         buf.truncate(n);
         Ok(buf.into_boxed_slice())
+    }
+
+    pub(crate) fn get_file_inode(path: &str) -> Result<FileIdentity> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path)?;
+        Ok(FileIdentity {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
     }
 }
 
@@ -105,6 +115,23 @@ mod no_std_impl {
 
             libc::close(fd);
             res
+        }
+    }
+
+    pub(crate) fn get_file_inode(path: &str) -> Result<FileIdentity> {
+        let mut path_c = Vec::from(path.as_bytes());
+        path_c.push(0);
+
+        unsafe {
+            let mut stat_buf: libc::stat = core::mem::zeroed();
+            let result = libc::stat(path_c.as_ptr() as *const c_char, &mut stat_buf);
+            if result < 0 {
+                return Err(crate::Error::IO(alloc::format!("Failed to stat file: {}", path)));
+            }
+            Ok(FileIdentity {
+                dev: stat_buf.st_dev,
+                ino: stat_buf.st_ino,
+            })
         }
     }
 }

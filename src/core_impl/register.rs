@@ -1,6 +1,7 @@
 use crate::{
     ElfLibrary, OpenFlags,
     core_impl::loader::{DylibExt, LoadedDylib},
+    core_impl::types::FileIdentity,
 };
 use alloc::{
     borrow::ToOwned,
@@ -157,6 +158,9 @@ pub(crate) struct GlobalDylib {
     pub(crate) deps: Option<Arc<[LoadedDylib]>>,
     /// Current state in the load/relocate lifecycle.
     pub(crate) state: DylibState,
+    /// Alternative names for this library (symlinks, alias paths, etc.).
+    /// Mirrors glibc's l_libname linked list.
+    pub(crate) libnames: Vec<String>,
 }
 
 unsafe impl Send for GlobalDylib {}
@@ -191,6 +195,16 @@ impl GlobalDylib {
     pub(crate) fn set_deps(&mut self, deps: Arc<[LoadedDylib]>) {
         self.deps = Some(deps);
     }
+
+    /// Add an alias name for this library (mirrors glibc's add_name_to_object).
+    /// Skips duplicates and the canonical shortname itself.
+    pub(crate) fn add_libname(&mut self, name: &str) {
+        let canonical = self.shortname();
+        if name != canonical && !self.libnames.iter().any(|n| n == name) {
+            log::trace!("Adding alias [{}] to library [{}]", name, canonical);
+            self.libnames.push(name.to_owned());
+        }
+    }
 }
 
 /// The global manager for all loaded dynamic libraries.
@@ -200,6 +214,8 @@ pub(crate) struct Manager {
     all: IndexMap<String, GlobalDylib>,
     /// Libraries available in the global symbol scope (RTLD_GLOBAL).
     global: IndexMap<String, LoadedDylib>,
+    /// Maps file identities to the canonical short name for fast inode-based lookup.
+    identities: IndexMap<FileIdentity, String>,
     /// The number of times a new object has been added to the link map.
     adds: u64,
     /// The number of times an object has been removed from the link map.
@@ -217,11 +233,17 @@ impl Manager {
         self.global.insert(name, lib);
     }
 
-    pub(crate) fn add(&mut self, name: String, lib: GlobalDylib) {
+    pub(crate) fn add(&mut self, name: String, mut lib: GlobalDylib) {
+        lib.libnames = Vec::new();
         let res = self.all.insert(name.clone(), lib);
         debug_assert!(res.is_none(), "Library [{}] is already registered", name);
         self.adds += 1;
         log::trace!("Registered [{}] in all map", name);
+    }
+
+    pub(crate) fn add_identity(&mut self, identity: FileIdentity, name: &str) {
+        // Newest wins; identical inode implies same physical file.
+        self.identities.insert(identity, name.to_owned());
     }
 
     pub(crate) fn remove(&mut self, shortname: &str) {
@@ -236,21 +258,38 @@ impl Manager {
             "Inconsistent global scope state when removing [{}]",
             shortname
         );
+        // Remove any identity aliases pointing to this shortname.
+        self.identities.retain(|_, v| v != shortname);
     }
 
     #[inline]
     pub(crate) fn get(&self, name: &str) -> Option<&GlobalDylib> {
-        self.all.get(name)
+        // Primary lookup by canonical shortname.
+        if let Some(lib) = self.all.get(name) {
+            return Some(lib);
+        }
+        // Alias lookup — mirrors glibc's l_libname chain scan.
+        self.all
+            .values()
+            .find(|lib| lib.libnames.iter().any(|n| n == name))
     }
 
     #[inline]
     pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut GlobalDylib> {
-        self.all.get_mut(name)
+        // Primary lookup.
+        if self.all.contains_key(name) {
+            return self.all.get_mut(name);
+        }
+        // Alias lookup.
+        self.all
+            .values_mut()
+            .find(|lib| lib.libnames.iter().any(|n| n == name))
     }
 
     #[inline]
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.all.contains_key(name)
+            || self.all.values().any(|lib| lib.libnames.iter().any(|n| n == name))
     }
 
     #[inline]
@@ -282,6 +321,13 @@ impl Manager {
     }
 
     #[inline]
+    pub(crate) fn get_by_identity(&self, identity: &FileIdentity) -> Option<&GlobalDylib> {
+        self.identities
+            .get(identity)
+            .and_then(|name| self.all.get(name))
+    }
+
+    #[inline]
     pub(crate) fn get_index(&self, index: usize) -> Option<(&String, &GlobalDylib)> {
         self.all.get_index(index)
     }
@@ -304,6 +350,7 @@ pub(crate) static MANAGER: Lazy<RwLock<Manager>> = Lazy::new(|| {
     RwLock::new(Manager {
         all: IndexMap::new(),
         global: IndexMap::new(),
+        identities: IndexMap::new(),
         adds: 0,
         subs: 0,
     })
@@ -347,8 +394,13 @@ pub(crate) fn register(
             inner: lib.clone(),
             flags,
             deps: None,
+            libnames: Vec::new(),
         },
     );
+
+    if let Some(identity) = lib.user_data().file_identity {
+        manager.add_identity(identity, &shortname);
+    }
     if flags.is_global() || is_main {
         manager.add_global(shortname, lib);
     }

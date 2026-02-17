@@ -10,6 +10,8 @@ cfg_if::cfg_if! {
         mod unix;
         pub(crate) use unix::*;
     } else {
+        use crate::core_impl::types::FileIdentity;
+        
         pub(crate) fn read_file(_path: &str) -> crate::Result<alloc::boxed::Box<[u8]>> {
             Err(crate::Error::Unsupported)
         }
@@ -18,6 +20,9 @@ cfg_if::cfg_if! {
         }
         pub(crate) unsafe fn get_r_debug() -> *mut GDBDebug {
             core::ptr::null_mut()
+        }
+        pub(crate) fn get_file_inode(_path: &str) -> crate::Result<FileIdentity> {
+            Err(crate::Error::Unsupported)
         }
     }
 }
