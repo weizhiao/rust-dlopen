@@ -154,21 +154,56 @@ impl<'a> OpenContext<'a> {
         }
     }
 
-    fn try_existing(&mut self, path: &str) -> Option<ElfLibrary> {
+    fn try_existing(&mut self, path: &str) -> Result<Option<ElfLibrary>> {
         let shortname = path.rsplit_once('/').map_or(path, |(_, name)| name);
+        // Step 1: fast name/alias lookup — no stat.
+        // Step 2: on miss, stat once and fall back to inode lookup.
         if let Some(lib) = self.wait_for_library(shortname) {
             let elf_lib = lib.get_lib();
-            log::info!("dlopen: Found existing library [{}]", path);
+            let canonical_shortname = lib.shortname();
+            log::info!(
+                "dlopen: Found existing library [{}] (canonical name: {})",
+                path,
+                canonical_shortname
+            );
             self.lock
                 .as_mut()
                 .expect("Lock must be held")
-                .promote(shortname, self.flags);
+                .promote(canonical_shortname, self.flags);
             self.committed = true;
-            return Some(elf_lib);
+            return Ok(Some(elf_lib));
         }
-        None
+
+        match self.inode_fallback(path, shortname) {
+            Ok(Some(lib)) => {
+                let elf_lib = lib.get_lib();
+                let canonical_shortname = lib.shortname();
+                log::info!(
+                    "dlopen: Found existing library [{}] (canonical name: {})",
+                    path,
+                    canonical_shortname
+                );
+                self.lock
+                    .as_mut()
+                    .expect("Lock must be held")
+                    .promote(canonical_shortname, self.flags);
+                self.committed = true;
+                Ok(Some(elf_lib))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                if path.contains('/') {
+                    // full path lookups should report errors
+                    Err(e)
+                } else {
+                    // short name lookups can fail without affecting correctness, so we treat it as a miss instead of an error
+                    Ok(None)
+                }
+            }
+        }
     }
 
+    /// Pure name/alias lookup with spin-wait for concurrent loads.
     fn wait_for_library(&mut self, shortname: &str) -> Option<GlobalDylib> {
         loop {
             let entry = {
@@ -184,12 +219,56 @@ impl<'a> OpenContext<'a> {
                     return Some(lib);
                 }
                 Some(_) => {
-                    // It's being loaded or relocated by another thread
+                    // It's being loaded or relocated by another thread.
                     drop(self.lock.take());
                     core::hint::spin_loop();
                     self.lock = Some(crate::lock_write!(MANAGER));
                 }
                 None => return None,
+            }
+        }
+    }
+
+    /// Stat `path` once and look up by inode. On hit, records `shortname` as an alias.
+    fn inode_fallback(&mut self, path: &str, shortname: &str) -> Result<Option<GlobalDylib>> {
+        let req_identity = crate::os::get_file_inode(path)?;
+        
+        loop {
+            let entry = {
+                let lock = self.lock.as_ref().expect("Lock must be held");
+                lock.get_by_identity(&req_identity).cloned()
+            };
+
+            match entry {
+                Some(lib) if lib.state.is_relocated() => {
+                    log::info!(
+                        "dlopen: Found existing library by inode match: requested [{}], existing [{}] (dev={}, ino={})",
+                        shortname,
+                        lib.dylib_ref().name(),
+                        req_identity.dev,
+                        req_identity.ino
+                    );
+                    // Register shortname as an alias so future name-based lookups skip the stat entirely.
+                    self.lock
+                        .as_mut()
+                        .expect("Lock must be held")
+                        .get_mut(lib.shortname())
+                        .expect("Library must be registered")
+                        .add_libname(shortname);
+                    return Ok(Some(lib));
+                }
+                Some(lib) if self.added_names.contains(&lib.shortname().to_string()) => {
+                     // It's a library being loaded by the current thread in this dlopen session.
+                     // We must not wait, otherwise we deadlock.
+                     return Ok(Some(lib));
+                }
+                Some(_) => {
+                    // It's being loaded or relocated by another thread.
+                    drop(self.lock.take());
+                    core::hint::spin_loop();
+                    self.lock = Some(crate::lock_write!(MANAGER));
+                }
+                None => return Ok(None),
             }
         }
     }
@@ -229,7 +308,7 @@ impl<'a> OpenContext<'a> {
             self.lock
                 .as_mut()
                 .expect("Lock must be held")
-                .promote(shortname, self.flags);
+                .promote(lib.shortname(), self.flags);
             return true;
         }
         false
@@ -443,7 +522,7 @@ impl<'a> OpenContext<'a> {
     }
 
     fn load_root(&mut self, path: &str, bytes: Option<&[u8]>) -> Result<Option<ElfLibrary>> {
-        if let Some(lib) = self.try_existing(path) {
+        if let Some(lib) = self.try_existing(path)? {
             return Ok(Some(lib));
         }
 
@@ -523,6 +602,20 @@ impl<'a> OpenContext<'a> {
         path: &ElfPath,
         bytes: Option<&[u8]>,
     ) -> Result<()> {
+        let shortname = path.as_str().rsplit_once('/').map_or(path.as_str(), |(_, n)| n);
+        match self.inode_fallback(path.as_str(), shortname) {
+            Ok(Some(lib)) => {
+                self.dep_libs.push(lib.dylib());
+                self.lock
+                    .as_mut()
+                    .expect("Lock must be held")
+                    .promote(lib.shortname(), self.flags);
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+
         let Some(libs) = self.load_and_register(path, bytes)? else {
             return Ok(());
         };
