@@ -1,8 +1,6 @@
-use crate::core_impl::register::global_find;
 use crate::core_impl::traits::AsFilename;
 use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
-use crate::utils::linker_script::get_linker_script_libs;
 use crate::{OpenFlags, Result, error::find_symbol_error};
 use alloc::{
     boxed::Box,
@@ -20,19 +18,13 @@ use elf_loader::input::ElfFile;
 use elf_loader::loader::LifecycleContext;
 use elf_loader::{
     Loader,
-    elf::{ElfDyn, ElfPhdr, abi::PT_DYNAMIC},
-    image::{ElfCoreRef, LoadedCore, RawDylib, Symbol},
+    elf::{ElfDyn, ElfPhdr, ElfProgramType},
+    image::{LoadedCore, RawDylib, Symbol},
     input::{ElfBinary, ElfReader},
 };
 
 pub(crate) type ElfDylib = RawDylib<ExtraData>;
 pub(crate) type LoadedDylib = LoadedCore<ExtraData>;
-pub(crate) type CoreComponentRef = ElfCoreRef<ExtraData>;
-
-pub(crate) enum LoadResult {
-    Dylib(ElfDylib),
-    Script(Vec<String>),
-}
 
 /// Searches for a symbol in a list of relocated libraries.
 ///
@@ -46,50 +38,6 @@ pub(crate) fn find_symbol<'lib, T>(
     libs.iter()
         .find_map(|lib| unsafe { lib.get::<T>(name) })
         .ok_or(find_symbol_error(format!("can not find symbol:{}", name)))
-}
-
-/// Creates a closure for lazy symbol resolution.
-///
-/// The closure captures weak references to the library's dependencies and uses them
-/// to resolve symbols at runtime. It respects the `RTLD_DEEPBIND` flag to determine
-/// the search order between the local dependency scope and the global scope.
-#[inline]
-pub(crate) fn create_lazy_scope(
-    deps: &[LoadedDylib],
-    flags: OpenFlags,
-) -> Arc<dyn for<'a> Fn(&'a str) -> Option<*const ()> + Send + Sync + 'static> {
-    let deps_weak: Vec<CoreComponentRef> = deps
-        .iter()
-        .map(|dep| unsafe { dep.core_ref().downgrade() })
-        .collect();
-    Arc::new(move |name: &str| {
-        let deepbind = flags.is_deepbind();
-
-        let local_find = || {
-            deps_weak.iter().find_map(|dep| unsafe {
-                let core = dep.upgrade()?;
-                let lib = LoadedDylib::from_core(core);
-                lib.get::<()>(name).map(|sym| {
-                    log::trace!(
-                        "Lazy Binding: find symbol [{}] from [{}] in local scope ",
-                        name,
-                        lib.name()
-                    );
-                    let val = sym.into_raw();
-                    assert!(lib.base() != val as usize);
-                    val
-                })
-            })
-        };
-
-        if deepbind {
-            local_find().or_else(|| unsafe { global_find::<()>(name).map(|s| s.into_raw()) })
-        } else {
-            unsafe { global_find::<()>(name) }
-                .map(|s| s.into_raw())
-                .or_else(local_find)
-        }
-    })
 }
 
 fn from_impl<'a, I>(object: I, file_path: Option<&str>) -> Result<ElfDylib>
@@ -127,8 +75,8 @@ where
     let dynamic_ptr = dylib
         .phdrs()
         .iter()
-        .find(|p| p.p_type == PT_DYNAMIC)
-        .map(|p| (base + p.p_vaddr as usize) as *mut ElfDyn)
+        .find(|p| p.program_type() == ElfProgramType::DYNAMIC)
+        .map(|p| (base + p.p_vaddr()) as *mut ElfDyn)
         .unwrap_or(core::ptr::null_mut());
 
     let user_data = dylib.user_data_mut().unwrap();
@@ -146,17 +94,22 @@ where
     unsafe { add_debug_link_map(link_map.as_mut()) };
     user_data.link_map = Some(link_map);
     user_data.c_name = Some(c_name);
-    
+
     // Get file identity (inode) if path is provided
     if let Some(path) = file_path {
         if let Ok(identity) = crate::os::get_file_inode(path) {
             user_data.file_identity = Some(identity);
-            log::debug!("Stored file identity for [{}]: dev={}, ino={}", path, identity.dev, identity.ino);
+            log::debug!(
+                "Stored file identity for [{}]: dev={}, ino={}",
+                path,
+                identity.dev,
+                identity.ino
+            );
         } else {
             log::warn!("Failed to get file identity for [{}]", path);
         }
     }
-    
+
     Ok(dylib)
 }
 
@@ -178,36 +131,14 @@ impl Debug for ElfLibrary {
 }
 
 impl ElfLibrary {
-    pub(crate) fn load(path: &str, content: Option<&[u8]>) -> Result<LoadResult> {
-        if let Some(bytes) = content {
-            if bytes.starts_with(b"\x7fELF") {
-                let dylib = Self::from_binary(bytes, path)?;
-                Ok(LoadResult::Dylib(dylib))
-            } else {
-                let libs = get_linker_script_libs(bytes);
-                Ok(LoadResult::Script(libs))
-            }
-        } else {
-            let header = crate::os::read_file_limit(path, 64)?;
-            if header.starts_with(b"\x7fELF") {
-                let dylib = Self::from_file(path)?;
-                Ok(LoadResult::Dylib(dylib))
-            } else {
-                let content = crate::os::read_file(path)?;
-                let libs = get_linker_script_libs(&content);
-                Ok(LoadResult::Script(libs))
-            }
-        }
-    }
-
-    fn from_file(path: impl AsFilename) -> Result<ElfDylib> {
+    pub(crate) fn load_file(path: impl AsFilename) -> Result<ElfDylib> {
         let path_ref = path.as_filename();
         let file = ElfFile::from_path(path_ref)?;
         from_impl(file, Some(path_ref))
     }
 
     /// Load a elf dynamic library from bytes.
-    fn from_binary(bytes: &[u8], path: impl AsFilename) -> Result<ElfDylib> {
+    pub(crate) fn load_binary(bytes: &[u8], path: impl AsFilename) -> Result<ElfDylib> {
         let file = ElfBinary::new(path.as_filename(), bytes);
         // For binary loads, we don't have a physical file path to stat
         from_impl(file, None)

@@ -1,8 +1,8 @@
 use dlopen_rs::{ElfLibrary, OpenFlags};
 use std::env::consts;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::fs;
 
 const TARGET_DIR: Option<&'static str> = option_env!("CARGO_TARGET_DIR");
 static TARGET_TRIPLE: OnceLock<String> = OnceLock::new();
@@ -63,44 +63,49 @@ fn compile() {
 #[test]
 fn test_symlink_inode_detection() {
     compile();
-    
+
     // Get the path to the compiled test library
     let original_path = lib_path("libexample.so");
-    
+
     // Ensure the library exists and convert to absolute path
     let original_path = fs::canonicalize(&original_path)
         .expect(&format!("Failed to find library at: {}", original_path));
-    
+
     println!("Original library path: {:?}", original_path);
-    
+
     // Create a temporary directory for our test
     let temp_dir = std::env::temp_dir().join("dlopen_inode_test_symlink");
     let _ = fs::remove_dir_all(&temp_dir); // Clean start
     let _ = fs::create_dir_all(&temp_dir);
 
     let symlink_path = temp_dir.join("libexample_symlink.so");
-    
+
     // Create a symlink to the test library
     std::os::unix::fs::symlink(&original_path, &symlink_path).expect("Failed to create symlink");
-    
+
     println!("Symlink created at: {:?}", symlink_path);
 
     // Load via original path
     let lib1 = ElfLibrary::dlopen(
         original_path.to_str().unwrap(),
-        OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL
-    ).expect("Failed to load library via original path");
-    
+        OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL,
+    )
+    .expect("Failed to load library via original path");
+
     // Load via symlink - should return the same library instance
     let lib2 = ElfLibrary::dlopen(
         symlink_path.to_str().unwrap(),
-        OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL
-    ).expect("Failed to load library via symlink");
+        OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL,
+    )
+    .expect("Failed to load library via symlink");
 
     // Verify they have the same base address (same library instance)
-    assert_eq!(lib1.base(), lib2.base(), 
-        "Libraries loaded via different paths should have same base address due to inode checking");
-    
+    assert_eq!(
+        lib1.base(),
+        lib2.base(),
+        "Libraries loaded via different paths should have same base address due to inode checking"
+    );
+
     // Cleanup
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -116,37 +121,36 @@ fn test_relative_path_deduplication() {
     // 1. Load via absolute path
     let lib1 = ElfLibrary::dlopen(
         original_path.to_str().unwrap(),
-        OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL
-    ).expect("Failed to load absolute path");
+        OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL,
+    )
+    .expect("Failed to load absolute path");
 
     // 2. Load via relative path (change cwd to the lib dir)
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir).unwrap();
-    
+
     let relative_path = format!("./{}", filename);
-    let lib2 = ElfLibrary::dlopen(
-        &relative_path,
-        OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL
-    ).expect("Failed to load relative path");
+    let lib2 = ElfLibrary::dlopen(&relative_path, OpenFlags::RTLD_NOW | OpenFlags::RTLD_LOCAL)
+        .expect("Failed to load relative path");
 
     // Restore cwd
     std::env::set_current_dir(cwd).unwrap();
 
-    assert_eq!(lib1.base(), lib2.base(), "Relative path load should be deduplicated");
+    assert_eq!(
+        lib1.base(),
+        lib2.base(),
+        "Relative path load should be deduplicated"
+    );
 }
 
 #[test]
 fn test_non_existent_file_fail_fast() {
     // Test that a non-existent file with explicit path fails immediately
-    let result = ElfLibrary::dlopen(
-        "/tmp/non_existent_library_XYZ.so",
-        OpenFlags::RTLD_NOW
-    );
+    let result = ElfLibrary::dlopen("/tmp/non_existent_library_XYZ.so", OpenFlags::RTLD_NOW);
     assert!(result.is_err());
-    
+
     // The error message should indicate file not found, not something from the search path iteration
     let err_msg = result.err().unwrap().to_string();
     println!("Error message: {}", err_msg);
     // Note: exact error message depends on implementation, but it should fail.
 }
-

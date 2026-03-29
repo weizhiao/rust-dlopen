@@ -275,6 +275,7 @@ dependencies = [
  "ctor",
  "elf_loader",
  "env_logger",
+ "hashbrown",
  "indexmap",
  "libc",
  "libloading",
@@ -312,12 +313,10 @@ checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
 
 [[package]]
 name = "elf_loader"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0297947a5f5b79b1b86ae08aba48e25e1367637ded59b1112393e5b9176fe2ae"
+version = "0.14.1"
+source = "git+https://github.com/weizhiao/Relink.git#036e0cc3b3acd78b97eb32728495eb0221e9bf07"
 dependencies = [
  "bitflags",
- "cc",
  "cfg-if",
  "elf",
  "foldhash",

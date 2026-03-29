@@ -126,7 +126,10 @@ mod no_std_impl {
             let mut stat_buf: libc::stat = core::mem::zeroed();
             let result = libc::stat(path_c.as_ptr() as *const c_char, &mut stat_buf);
             if result < 0 {
-                return Err(crate::Error::IO(alloc::format!("Failed to stat file: {}", path)));
+                return Err(crate::Error::IO(alloc::format!(
+                    "Failed to stat file: {}",
+                    path
+                )));
             }
             Ok(FileIdentity {
                 dev: stat_buf.st_dev,

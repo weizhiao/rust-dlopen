@@ -8,7 +8,7 @@ use crate::{
     core_impl::loader::{DylibExt, LoadedDylib},
     core_impl::register::{DylibState, MANAGER, register},
 };
-use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, string::String, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, vec::Vec};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr::{NonNull, null_mut},
@@ -17,10 +17,10 @@ use core::{
 use elf_loader::elf::abi::{
     DT_FINI, DT_FINI_ARRAY, DT_GNU_HASH, DT_GNU_LIBLIST, DT_HASH, DT_INIT, DT_INIT_ARRAY,
     DT_JMPREL, DT_NULL, DT_PLTGOT, DT_REL, DT_RELA, DT_RELACOUNT, DT_STRTAB, DT_SYMTAB, DT_VERDEF,
-    DT_VERNEED, DT_VERSYM, PT_DYNAMIC, PT_LOAD, PT_TLS,
+    DT_VERNEED, DT_VERSYM,
 };
 use elf_loader::{
-    elf::{ElfDyn, ElfHeader, ElfPhdr},
+    elf::{ElfDyn, ElfHeader, ElfPhdr, ElfProgramType},
     tls::DefaultTlsResolver,
 };
 use spin::Once;
@@ -69,22 +69,25 @@ static IS_MUSL: AtomicBool = AtomicBool::new(false);
 /// This is necessary because some dynamic linkers (like glibc) modify the dynamic table in place.
 unsafe fn recover_dynamic_table(dynamic_ptr: *const ElfDyn, base: usize) -> Vec<ElfDyn> {
     let mut count = 0;
-    while unsafe { (*dynamic_ptr.add(count)).d_tag != DT_NULL } {
+    while unsafe { (*dynamic_ptr.add(count)).tag().raw() } != DT_NULL {
         count += 1;
     }
     let mut table = (0..=count) // include DT_NULL
-        .map(|i| unsafe { core::ptr::read(dynamic_ptr.add(i)) })
+        .map(|i| {
+            let entry = unsafe { &*dynamic_ptr.add(i) };
+            ElfDyn::new(entry.tag(), entry.value())
+        })
         .collect::<Vec<_>>();
 
     for entry in table.iter_mut() {
-        if DT_ADDR_TAGS.contains(&(entry.d_tag as i64)) && (entry.d_un as usize) > base {
-            let old = entry.d_un;
-            entry.d_un = (entry.d_un as usize - base) as u64;
+        if DT_ADDR_TAGS.contains(&entry.tag().raw()) && entry.value() > base {
+            let old = entry.value();
+            entry.set_value(entry.value() - base);
             log::trace!(
                 "Recovered tag {}: {:#x} -> {:#x}",
-                entry.d_tag,
+                entry.tag().raw(),
                 old,
-                entry.d_un
+                entry.value()
             );
         }
     }
@@ -140,18 +143,21 @@ unsafe fn from_raw(
 
     // 3. Process phdrs and memory length
     let (phdrs, mut len) = get_phdrs_and_len(base, extra.map(|e| e.0));
-    let mut use_phdrs = phdrs.to_vec();
+    let mut use_phdrs = phdrs;
 
     if let Some(table) = &user_data.dynamic_table {
-        if let Some(p) = use_phdrs.iter_mut().find(|p| p.p_type == PT_DYNAMIC) {
+        if let Some(p) = use_phdrs
+            .iter_mut()
+            .find(|p| p.program_type() == ElfProgramType::DYNAMIC)
+        {
             let offset = (table.as_ptr() as usize).wrapping_sub(base);
-            p.p_vaddr = offset as u64;
+            p.set_p_vaddr(offset);
         }
     }
 
     // Filter out PT_TLS if we don't have tls_data (e.g. from host dl_iterate_phdr with null dlpi_tls_data)
     if extra.as_ref().map_or(true, |e| e.1.is_none()) {
-        use_phdrs.retain(|p| p.p_type != PT_TLS);
+        use_phdrs.retain(|p| p.program_type() != ElfProgramType::TLS);
     }
 
     len = (len + 0xfff) & !0xfff; // align to page size
@@ -164,7 +170,7 @@ unsafe fn from_raw(
     let lib = unsafe {
         LoadedDylib::new_unchecked::<DefaultTlsResolver>(
             name_str.clone(),
-            use_phdrs.as_slice(),
+            use_phdrs,
             (base as *mut c_void, len),
             |_ptr, _len| Ok(()),
             extra.and_then(|e| e.2).map(|o| -(o as isize)),
@@ -179,21 +185,21 @@ unsafe fn from_raw(
     Ok(Some(lib))
 }
 
-fn get_phdrs_and_len(base: usize, extra: Option<&[ElfPhdr]>) -> (&[ElfPhdr], usize) {
-    let phdrs = extra.unwrap_or_else(|| {
+fn get_phdrs_and_len(base: usize, extra: Option<&[ElfPhdr]>) -> (Vec<ElfPhdr>, usize) {
+    let phdrs = if let Some(extra) = extra {
+        extra.to_vec()
+    } else {
         let ehdr = unsafe { &*(base as *const ElfHeader) };
-        unsafe {
-            core::slice::from_raw_parts(
-                (base + ehdr.e_phoff as usize) as *const ElfPhdr,
-                ehdr.e_phnum as usize,
-            )
-        }
-    });
+        let phdrs = unsafe {
+            core::slice::from_raw_parts((base + ehdr.e_phoff()) as *const ElfPhdr, ehdr.e_phnum())
+        };
+        phdrs.to_vec()
+    };
 
     let len = phdrs
         .iter()
-        .filter(|phdr| phdr.p_type == PT_LOAD)
-        .map(|phdr| (phdr.p_vaddr + phdr.p_memsz) as usize)
+        .filter(|phdr| phdr.program_type() == ElfProgramType::LOAD)
+        .map(|phdr| phdr.p_vaddr() + phdr.p_memsz())
         .max()
         .unwrap_or(0);
 
@@ -326,8 +332,8 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut 
     let phdrs = unsafe { core::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
     let dynamic_ptr = phdrs
         .iter()
-        .find(|p| p.p_type == PT_DYNAMIC)
-        .map(|p| (base + p.p_vaddr as usize) as *const ElfDyn)
+        .find(|p| p.program_type() == ElfProgramType::DYNAMIC)
+        .map(|p| (base + p.p_vaddr()) as *const ElfDyn)
         .expect("No PT_DYNAMIC found in phdrs");
 
     // Calculate static TLS offset if applicable
@@ -378,11 +384,7 @@ fn init() {
 
             // Compute deps for all host libraries
             let mut lock = crate::lock_write!(MANAGER);
-            let names: Vec<String> = lock.keys().cloned().collect();
-            crate::core_impl::register::update_dependency_scopes(
-                &mut lock,
-                names.iter().map(String::as_str),
-            );
+            lock.ensure_all_deps();
         }
         log::info!("init: initialization complete");
     });

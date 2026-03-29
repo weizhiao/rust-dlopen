@@ -5,12 +5,14 @@ use crate::{
 };
 use alloc::{
     borrow::ToOwned,
+    boxed::Box,
     collections::{btree_set::BTreeSet, vec_deque::VecDeque},
     string::String,
     sync::Arc,
     vec::Vec,
 };
 use core::ffi::{c_int, c_void};
+use hashbrown::HashMap;
 use indexmap::IndexMap;
 use spin::{Lazy, RwLock};
 
@@ -93,54 +95,32 @@ impl Drop for ElfLibrary {
 }
 
 /// Represents the current lifecycle state of a dynamic library.
-///
-/// The state uses a compact u8 representation:
-/// - `[0, 254)`: Newly loaded library, value is the index in the current loading batch.
-/// - `254`: Currently undergoing relocation.
-/// - `255`: Successfully relocated and ready for use.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct DylibState(u8);
+pub(crate) enum DylibState {
+    #[default]
+    New,
+    Relocating,
+    Relocated,
+}
 
 impl DylibState {
-    const RELOCATED: u8 = 0b11111111;
-    const RELOCATING: u8 = 0b11111110;
-
     /// Returns true if the library is fully relocated.
     #[inline]
     pub(crate) fn is_relocated(&self) -> bool {
-        self.0 == Self::RELOCATED
-    }
-
-    /// If the library is in a "new" state, returns its batch index.
-    #[inline]
-    pub(crate) fn get_new_idx(&self) -> Option<u8> {
-        if self.0 >= Self::RELOCATING {
-            None
-        } else {
-            Some(self.0)
-        }
+        matches!(self, Self::Relocated)
     }
 
     /// Transitions the state to Relocated.
     #[inline]
     pub(crate) fn set_relocated(&mut self) -> &mut Self {
-        self.0 = Self::RELOCATED;
+        *self = Self::Relocated;
         self
     }
 
     /// Transitions the state to Relocating.
     #[inline]
     pub(crate) fn set_relocating(&mut self) -> &mut Self {
-        self.0 = Self::RELOCATING;
-        self
-    }
-
-    /// Sets the state to a "new" library with the given batch index.
-    #[allow(unused)]
-    #[inline]
-    pub(crate) fn set_new_idx(&mut self, idx: u8) -> &mut Self {
-        assert!(idx < Self::RELOCATING);
-        self.0 = idx;
+        *self = Self::Relocating;
         self
     }
 }
@@ -168,15 +148,6 @@ unsafe impl Sync for GlobalDylib {}
 
 impl GlobalDylib {
     #[inline]
-    pub(crate) fn get_lib(&self) -> ElfLibrary {
-        debug_assert!(self.deps.is_some());
-        ElfLibrary {
-            inner: self.inner.clone(),
-            deps: self.deps.clone(),
-        }
-    }
-
-    #[inline]
     pub(crate) fn dylib(&self) -> LoadedDylib {
         self.inner.clone()
     }
@@ -190,21 +161,6 @@ impl GlobalDylib {
     pub(crate) fn shortname(&self) -> &str {
         self.inner.shortname()
     }
-
-    #[inline]
-    pub(crate) fn set_deps(&mut self, deps: Arc<[LoadedDylib]>) {
-        self.deps = Some(deps);
-    }
-
-    /// Add an alias name for this library (mirrors glibc's add_name_to_object).
-    /// Skips duplicates and the canonical shortname itself.
-    pub(crate) fn add_libname(&mut self, name: &str) {
-        let canonical = self.shortname();
-        if name != canonical && !self.libnames.iter().any(|n| n == name) {
-            log::trace!("Adding alias [{}] to library [{}]", name, canonical);
-            self.libnames.push(name.to_owned());
-        }
-    }
 }
 
 /// The global manager for all loaded dynamic libraries.
@@ -214,8 +170,10 @@ pub(crate) struct Manager {
     all: IndexMap<String, GlobalDylib>,
     /// Libraries available in the global symbol scope (RTLD_GLOBAL).
     global: IndexMap<String, LoadedDylib>,
+    /// Alias names that resolve to a canonical short name.
+    aliases: HashMap<String, String>,
     /// Maps file identities to the canonical short name for fast inode-based lookup.
-    identities: IndexMap<FileIdentity, String>,
+    identities: HashMap<FileIdentity, String>,
     /// The number of times a new object has been added to the link map.
     adds: u64,
     /// The number of times an object has been removed from the link map.
@@ -223,6 +181,16 @@ pub(crate) struct Manager {
 }
 
 impl Manager {
+    fn canonical_name_owned(&self, name: &str) -> Option<String> {
+        Some(self.get(name)?.shortname().to_owned())
+    }
+
+    fn promoted_name(&mut self, name: &str, flags: OpenFlags) -> Option<String> {
+        let canonical = self.canonical_name_owned(name)?;
+        self.promote(&canonical, flags);
+        Some(canonical)
+    }
+
     pub(crate) fn add_global(&mut self, name: String, lib: LoadedDylib) {
         debug_assert!(
             !self.global.contains_key(&name),
@@ -239,6 +207,44 @@ impl Manager {
         debug_assert!(res.is_none(), "Library [{}] is already registered", name);
         self.adds += 1;
         log::trace!("Registered [{}] in all map", name);
+    }
+
+    pub(crate) fn add_alias(&mut self, canonical: &str, alias: &str) {
+        debug_assert!(
+            self.all.contains_key(canonical),
+            "Canonical library [{}] must be registered before adding aliases",
+            canonical
+        );
+
+        if self.all.contains_key(alias) {
+            log::trace!(
+                "Skipping alias [{}] for [{}]: the name is already used as a canonical key",
+                alias,
+                canonical
+            );
+            return;
+        }
+
+        if let Some(existing) = self.aliases.get(alias) {
+            if existing != canonical {
+                log::trace!(
+                    "Skipping alias [{}] for [{}]: it already resolves to [{}]",
+                    alias,
+                    canonical,
+                    existing
+                );
+            }
+            return;
+        }
+
+        let lib = self
+            .all
+            .get_mut(canonical)
+            .expect("Canonical library must be registered before adding aliases");
+
+        log::trace!("Adding alias [{}] to library [{}]", alias, canonical);
+        lib.libnames.push(alias.to_owned());
+        self.aliases.insert(alias.to_owned(), canonical.to_owned());
     }
 
     pub(crate) fn add_identity(&mut self, identity: FileIdentity, name: &str) {
@@ -258,6 +264,9 @@ impl Manager {
             "Inconsistent global scope state when removing [{}]",
             shortname
         );
+        for alias in &lib.libnames {
+            self.aliases.remove(alias);
+        }
         // Remove any identity aliases pointing to this shortname.
         self.identities.retain(|_, v| v != shortname);
     }
@@ -268,10 +277,9 @@ impl Manager {
         if let Some(lib) = self.all.get(name) {
             return Some(lib);
         }
-        // Alias lookup — mirrors glibc's l_libname chain scan.
-        self.all
-            .values()
-            .find(|lib| lib.libnames.iter().any(|n| n == name))
+        self.aliases
+            .get(name)
+            .and_then(|canonical| self.all.get(canonical))
     }
 
     #[inline]
@@ -280,16 +288,8 @@ impl Manager {
         if self.all.contains_key(name) {
             return self.all.get_mut(name);
         }
-        // Alias lookup.
-        self.all
-            .values_mut()
-            .find(|lib| lib.libnames.iter().any(|n| n == name))
-    }
-
-    #[inline]
-    pub(crate) fn contains(&self, name: &str) -> bool {
-        self.all.contains_key(name)
-            || self.all.values().any(|lib| lib.libnames.iter().any(|n| n == name))
+        let canonical = self.aliases.get(name)?.clone();
+        self.all.get_mut(&canonical)
     }
 
     #[inline]
@@ -316,11 +316,6 @@ impl Manager {
     }
 
     #[inline]
-    pub(crate) fn keys(&self) -> indexmap::map::Keys<'_, String, GlobalDylib> {
-        self.all.keys()
-    }
-
-    #[inline]
     pub(crate) fn get_by_identity(&self, identity: &FileIdentity) -> Option<&GlobalDylib> {
         self.identities
             .get(identity)
@@ -328,8 +323,118 @@ impl Manager {
     }
 
     #[inline]
-    pub(crate) fn get_index(&self, index: usize) -> Option<(&String, &GlobalDylib)> {
-        self.all.get_index(index)
+    pub(crate) fn main_library(&self) -> Option<ElfLibrary> {
+        let (_, lib) = self.all.get_index(0)?;
+        Some(ElfLibrary {
+            inner: lib.inner.clone(),
+            deps: lib.deps.clone(),
+        })
+    }
+
+    pub(crate) fn cache_deps(&mut self, name: &str, deps: Arc<[LoadedDylib]>) {
+        self.get_mut(name).expect("Library must be registered").deps = Some(deps);
+    }
+
+    pub(crate) fn canonical_direct_deps(&self, lib: &LoadedDylib) -> Box<[String]> {
+        let mut deps = Vec::with_capacity(lib.needed_libs().len());
+        let mut seen = BTreeSet::new();
+
+        for needed in lib.needed_libs() {
+            let Some(dep) = self.get(needed) else {
+                continue;
+            };
+            let shortname = dep.shortname().to_owned();
+            if seen.insert(shortname.clone()) {
+                deps.push(shortname);
+            }
+        }
+
+        deps.into_boxed_slice()
+    }
+
+    pub(crate) fn group_scope(&self, keys: &[String]) -> Arc<[LoadedDylib]> {
+        let mut scope = Vec::with_capacity(keys.len());
+        for key in keys {
+            let lib = self.get(key).expect("Group library must be registered");
+            scope.push(lib.dylib());
+        }
+        Arc::from(scope)
+    }
+
+    pub(crate) fn relocation_scope(
+        &self,
+        group_scope: &[LoadedDylib],
+        flags: OpenFlags,
+    ) -> Arc<[LoadedDylib]> {
+        let mut seen = BTreeSet::new();
+        let mut scope = Vec::with_capacity(group_scope.len() + self.global.len());
+        let mut push_unique = |lib: &LoadedDylib| {
+            if seen.insert(lib.shortname().to_owned()) {
+                scope.push(lib.clone());
+            }
+        };
+
+        if flags.is_deepbind() {
+            for lib in group_scope {
+                push_unique(lib);
+            }
+            for lib in self.global_values() {
+                push_unique(lib);
+            }
+        } else {
+            for lib in self.global_values() {
+                push_unique(lib);
+            }
+            for lib in group_scope {
+                push_unique(lib);
+            }
+        }
+
+        Arc::from(scope)
+    }
+
+    pub(crate) fn ensure_all_deps(&mut self) {
+        let names = self.all.keys().cloned().collect::<Vec<_>>();
+        for name in &names {
+            let _ = self.ensure_deps(name);
+        }
+    }
+
+    pub(crate) fn ensure_deps(&mut self, name: &str) -> Option<Arc<[LoadedDylib]>> {
+        let canonical = self.canonical_name_owned(name)?;
+        if let Some(deps) = self.get(&canonical)?.deps.clone() {
+            return Some(deps);
+        }
+
+        let deps = build_dependency_scope(self, &canonical);
+        self.cache_deps(&canonical, deps.clone());
+        Some(deps)
+    }
+
+    pub(crate) fn open_existing(&mut self, name: &str, flags: OpenFlags) -> Option<ElfLibrary> {
+        let canonical = self.promoted_name(name, flags)?;
+        self.get_lib(&canonical)
+    }
+
+    pub(crate) fn loaded_existing(
+        &mut self,
+        name: &str,
+        flags: OpenFlags,
+    ) -> Option<(LoadedDylib, Box<[String]>)> {
+        let canonical = self.promoted_name(name, flags)?;
+        let entry = self.get(&canonical)?;
+        let direct_deps = self.canonical_direct_deps(entry.dylib_ref());
+        Some((entry.dylib(), direct_deps))
+    }
+
+    pub(crate) fn get_lib(&mut self, name: &str) -> Option<ElfLibrary> {
+        let canonical = self.canonical_name_owned(name)?;
+        let deps = self.ensure_deps(&canonical)?;
+        let inner = self.get(&canonical)?.dylib();
+        Some(ElfLibrary {
+            inner,
+            deps: Some(deps),
+        })
     }
 
     pub(crate) fn promote(&mut self, shortname: &str, flags: OpenFlags) {
@@ -350,7 +455,8 @@ pub(crate) static MANAGER: Lazy<RwLock<Manager>> = Lazy::new(|| {
     RwLock::new(Manager {
         all: IndexMap::new(),
         global: IndexMap::new(),
-        identities: IndexMap::new(),
+        aliases: HashMap::new(),
+        identities: HashMap::new(),
         adds: 0,
         subs: 0,
     })
@@ -447,65 +553,49 @@ pub(crate) unsafe fn next_find<'a, T>(addr: usize, name: &str) -> Option<crate::
 
 pub(crate) fn addr2dso(addr: usize) -> Option<ElfLibrary> {
     log::trace!("addr2dso: addr [{:#x}]", addr);
-    // Use the manager directly to avoid potential cloning if not needed,
-    // but here we return ElfLibrary which is a wrapper.
-    crate::lock_read!(MANAGER).all_values().find_map(|v| {
+    let manager = crate::lock_read!(MANAGER);
+    let entry = manager.all_values().find(|v| {
         let start = v.dylib_ref().base();
         let end = start + v.dylib_ref().mapped_len();
-        if (start..end).contains(&addr) {
-            Some(v.get_lib())
-        } else {
-            None
-        }
+        (start..end).contains(&addr)
+    })?;
+    let deps = entry
+        .deps
+        .clone()
+        .unwrap_or_else(|| build_dependency_scope(&manager, entry.shortname()));
+    Some(ElfLibrary {
+        inner: entry.dylib(),
+        deps: Some(deps),
     })
 }
 
-/// Updates the dependency Searchlist for the specified root libraries.
-///
-/// For each root, it performs a Breadth-First Search (BFS) over its dependency tree
-/// to calculate a flat list of all libraries (the Searchlist) used for symbol resolution.
-/// This matches the behavior of the glibc dynamic linker.
-pub(crate) fn update_dependency_scopes<'a>(
-    manager: &mut Manager,
-    roots: impl Iterator<Item = &'a str>,
-) {
-    for root_name in roots {
-        let Some(root_lib) = manager.get(root_name) else {
+fn build_dependency_scope(manager: &Manager, root_name: &str) -> Arc<[LoadedDylib]> {
+    let mut scope = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut queue = VecDeque::new();
+
+    visited.insert(root_name.to_owned());
+    queue.push_back(root_name.to_owned());
+
+    while let Some(current_name) = queue.pop_front() {
+        let Some(lib_entry) = manager.get(&current_name) else {
             continue;
         };
+        let dylib = lib_entry.dylib();
+        scope.push(dylib.clone());
 
-        if root_lib.deps.is_some() {
-            continue;
-        }
-
-        let mut scope = Vec::new();
-        let mut visited = BTreeSet::new();
-        let mut queue = VecDeque::new();
-
-        visited.insert(root_name.to_owned());
-        queue.push_back(root_name.to_owned());
-
-        while let Some(current_name) = queue.pop_front() {
-            let Some(lib_entry) = manager.get(&current_name) else {
+        for needed in dylib.needed_libs() {
+            let Some(dep) = manager.get(needed) else {
                 continue;
             };
-            let dylib = lib_entry.dylib();
-            scope.push(dylib.clone());
-
-            for needed in dylib.needed_libs() {
-                if !manager.contains(needed) {
-                    continue;
-                }
-                if !visited.contains(needed) {
-                    visited.insert(needed.to_owned());
-                    queue.push_back(needed.to_owned());
-                }
+            let shortname = dep.shortname().to_owned();
+            if visited.insert(shortname.clone()) {
+                queue.push_back(shortname);
             }
         }
-        if let Some(entry) = manager.get_mut(root_name) {
-            entry.set_deps(Arc::from(scope));
-        }
     }
+
+    Arc::from(scope)
 }
 
 pub(crate) fn register_atexit(

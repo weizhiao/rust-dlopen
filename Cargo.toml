@@ -28,10 +28,15 @@ features = ["rwlock", "lazy", "mutex", "spin_mutex"]
 [dependencies.indexmap]
 version = '2.9.0'
 
-[dependencies.elf_loader]
-version = "=0.14.0"
+[dependencies.hashbrown]
+version = "0.16.1"
 default-features = false
-features = ["log"]
+features = ["default-hasher"]
+
+[dependencies.elf_loader]
+git = "https://github.com/weizhiao/Relink.git"
+default-features = false
+features = ["log","full"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.171", default-features = false }

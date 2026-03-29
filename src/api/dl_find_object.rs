@@ -1,6 +1,6 @@
 use crate::core_impl::{register::addr2dso, types::LinkMap};
 use core::ffi::{c_int, c_void};
-use elf_loader::elf::abi::PT_GNU_EH_FRAME;
+use elf_loader::elf::ElfProgramType;
 
 #[repr(C)]
 struct DlFindObject {
@@ -26,8 +26,8 @@ extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut DlFindObject) -> c_i
 
     let eh_frame = phdrs
         .iter()
-        .find(|p| p.p_type == PT_GNU_EH_FRAME)
-        .map(|p| dso.base() + p.p_vaddr as usize)
+        .find(|p| p.program_type() == ElfProgramType::GNU_EH_FRAME)
+        .map(|p| dso.base() + p.p_vaddr())
         .unwrap_or(0);
 
     let info = unsafe { &mut *dlfo };

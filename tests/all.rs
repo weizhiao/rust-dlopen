@@ -174,10 +174,7 @@ fn thread_local() {
 fn linker_script() {
     compile();
     let path = lib_path("libexample.so");
-    let lib_dir = PathBuf::from(&path)
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let lib_dir = PathBuf::from(&path).parent().unwrap().to_path_buf();
     let script_path = lib_dir.join("test_script.so");
     std::fs::write(&script_path, format!("GROUP ( {path} )")).unwrap();
 
@@ -189,10 +186,7 @@ fn linker_script() {
 fn linker_script_as_needed() {
     compile();
     let path = lib_path("libexample.so");
-    let lib_dir = PathBuf::from(&path)
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let lib_dir = PathBuf::from(&path).parent().unwrap().to_path_buf();
     let script_path = lib_dir.join("test_script_as_needed.so");
     std::fs::write(&script_path, format!("GROUP ( AS_NEEDED ( {path} ) )")).unwrap();
 
