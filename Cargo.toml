@@ -17,7 +17,7 @@ members = ["example-dylib", "cdylib"]
 resolver = "2"
 
 [workspace.dependencies]
-ctor = "0.6.3"
+ctor = "0.8.0"
 env_logger = "0.11.10"
 
 [dependencies.spin]
