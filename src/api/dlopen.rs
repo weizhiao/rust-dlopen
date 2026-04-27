@@ -1,7 +1,7 @@
 use crate::{
     OpenFlags, Result,
     core_impl::{
-        loader::{DylibExt, ElfDylib, ElfLibrary, LoadedDylib},
+        loader::{DylibExt, ElfLibrary, LoadedDylib, new_loader},
         register::{DylibState, GlobalDylib, MANAGER, Manager, register},
         traits::AsFilename,
         types::ExtraData,
@@ -23,9 +23,10 @@ use core::{
     cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
 };
+use elf_loader::input::{ElfBinary, ElfFile, ElfReader};
 use elf_loader::linker::{
-    DependencyRequest, LinkContext, LinkContextView, ModuleRelocator, ModuleResolver,
-    RelocationRequest, ResolvedModule,
+    DependencyRequest, KeyResolver, LinkContext, Linker, RelocationInputs, RelocationPlanner,
+    RelocationRequest, ResolvedKey,
 };
 use spin::{Lazy, RwLockWriteGuard};
 
@@ -126,7 +127,6 @@ struct OpenContext<'a> {
 }
 
 struct RelocationPlan {
-    group_scope: Arc<[LoadedDylib]>,
     relocation_scope: Arc<[LoadedDylib]>,
 }
 
@@ -240,17 +240,20 @@ impl<'a> OpenContext<'a> {
         elf_lib
     }
 
-    fn prepare_relocation(&self, group_order: &[String]) -> RelocationPlan {
-        let (group_scope, relocation_scope) = self.with_manager(|manager| {
-            let group_scope = manager.group_scope(group_order);
-            let relocation_scope = manager.relocation_scope(&group_scope, self.flags);
-            (group_scope, relocation_scope)
+    fn prepare_relocation(&self, group_scope: &[LoadedDylib]) -> RelocationPlan {
+        let group_keys = group_scope
+            .iter()
+            .map(|lib| lib.shortname().to_owned())
+            .collect::<Vec<_>>();
+        let relocation_scope = self.with_manager_mut(|manager| {
+            self.register_pending_group(manager, &group_keys, group_scope);
+            self.with_added_libraries(manager, |lib| {
+                lib.state.set_relocating();
+            });
+            manager.relocation_scope(group_scope, self.flags)
         });
-        self.begin_relocation();
-        RelocationPlan {
-            group_scope,
-            relocation_scope,
-        }
+        drop(self.take_lock());
+        RelocationPlan { relocation_scope }
     }
 
     fn try_existing(&mut self, path: &str) -> Result<Option<ElfLibrary>> {
@@ -306,69 +309,77 @@ impl<'a> OpenContext<'a> {
     fn resolve_found(
         &self,
         lib: GlobalDylib,
-        visible: Option<LinkContextView<'_, String, ExtraData>>,
-    ) -> ResolvedModule<String, ExtraData> {
+        visible: Option<&dyn Fn(&str) -> bool>,
+    ) -> Option<ResolvedKey<'static, String>> {
         let shortname = lib.shortname().to_owned();
-        if self.has_added_name(&shortname)
-            || visible.is_some_and(|view| view.contains_key(&shortname))
-        {
-            ResolvedModule::existing(shortname)
+        if visible.map_or(true, |is_visible| is_visible(&shortname)) {
+            Some(ResolvedKey::existing(shortname))
         } else {
-            let (loaded, direct_deps) = self.with_manager_mut(|manager| {
-                manager
-                    .loaded_existing(&shortname, self.flags)
-                    .expect("Existing library must be retrievable")
-            });
-            ResolvedModule::new_loaded(shortname, loaded, direct_deps)
+            None
         }
     }
 
     fn resolve_existing_by_name(
         &self,
         shortname: &str,
-        visible: Option<LinkContextView<'_, String, ExtraData>>,
-    ) -> Option<ResolvedModule<String, ExtraData>> {
+        visible: Option<&dyn Fn(&str) -> bool>,
+    ) -> Option<ResolvedKey<'static, String>> {
+        if visible.is_some_and(|is_visible| is_visible(shortname)) {
+            return Some(ResolvedKey::existing(shortname.to_owned()));
+        }
+
         self.wait_for_library(shortname)
-            .map(|lib| self.resolve_found(lib, visible))
+            .and_then(|lib| self.resolve_found(lib, visible))
     }
 
     fn resolve_existing_by_path(
         &self,
         path: &str,
         shortname: &str,
-        visible: Option<LinkContextView<'_, String, ExtraData>>,
-    ) -> Result<Option<ResolvedModule<String, ExtraData>>> {
+        visible: Option<&dyn Fn(&str) -> bool>,
+    ) -> Result<Option<ResolvedKey<'static, String>>> {
+        if visible.is_some_and(|is_visible| is_visible(shortname)) {
+            return Ok(Some(ResolvedKey::existing(shortname.to_owned())));
+        }
+
         Ok(self
             .inode_fallback(path, shortname)?
-            .map(|lib| self.resolve_found(lib, visible)))
+            .and_then(|lib| self.resolve_found(lib, visible)))
     }
 
-    fn register_new(&self, lib: &ElfDylib) -> String {
-        let relocated = unsafe { LoadedDylib::from_core(lib.core()) };
-        let shortname = relocated.shortname().to_owned();
+    fn register_pending_group(
+        &self,
+        manager: &mut Manager,
+        group_keys: &[String],
+        group_scope: &[LoadedDylib],
+    ) {
+        for (key, lib) in group_keys.iter().zip(group_scope.iter()) {
+            if manager.get(key).is_some() {
+                continue;
+            }
 
-        self.with_manager_mut(|manager| {
-            register(relocated, self.flags, manager, DylibState::default());
-        });
-
-        self.record_added_name(shortname.clone());
-
-        shortname
+            let shortname = lib.shortname().to_owned();
+            debug_assert_eq!(
+                shortname, *key,
+                "resolved load key must match the placeholder shortname"
+            );
+            register(lib.clone(), self.flags, manager, DylibState::default());
+            self.record_added_name(shortname);
+        }
     }
 
-    fn begin_relocation(&self) {
-        self.with_manager_mut(|manager| {
-            self.with_added_libraries(manager, |lib| {
-                lib.state.set_relocating();
-            });
-        });
-        drop(self.take_lock());
-    }
-
-    fn complete_relocation(&self) {
+    fn complete_relocation(&self, link_ctx: &LinkContext<String, ExtraData>) {
         let mut lock = self
             .take_lock()
             .unwrap_or_else(|| crate::lock_write!(MANAGER));
+        lock.merge_link_context(
+            link_ctx,
+            self.added_names
+                .borrow()
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         self.with_added_libraries(&mut lock, |lib| {
             lib.state.set_relocated();
         });
@@ -399,8 +410,8 @@ struct LinkResolver<'ctx, 'mgr, 'bytes> {
     root_bytes: Option<&'bytes [u8]>,
 }
 
-enum CandidateInput {
-    Dylib(ElfDylib),
+enum CandidateInput<'bytes> {
+    Reader(Box<dyn ElfReader + 'bytes>),
     Script(Vec<String>),
 }
 
@@ -419,11 +430,11 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
 
     fn resolve_script(
         &mut self,
-        visible: Option<LinkContextView<'_, String, ExtraData>>,
+        visible: Option<&dyn Fn(&str) -> bool>,
         rpath: &[ElfPath],
         runpath: &[ElfPath],
         libs: Vec<String>,
-    ) -> Result<ResolvedModule<String, ExtraData>> {
+    ) -> Result<ResolvedKey<'bytes, String>> {
         self.resolve_first(libs, |resolver, lib| {
             resolver.resolve_request(visible, rpath, runpath, &lib, None)
         })?
@@ -432,12 +443,12 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
 
     fn resolve_candidate_path(
         &mut self,
-        visible: Option<LinkContextView<'_, String, ExtraData>>,
+        visible: Option<&dyn Fn(&str) -> bool>,
         rpath: &[ElfPath],
         runpath: &[ElfPath],
         path: &ElfPath,
-        bytes: Option<&[u8]>,
-    ) -> Result<ResolvedModule<String, ExtraData>> {
+        bytes: Option<&'bytes [u8]>,
+    ) -> Result<ResolvedKey<'bytes, String>> {
         let shortname = path
             .as_str()
             .rsplit_once('/')
@@ -450,33 +461,40 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
         }
 
         match self.load_candidate(path.as_str(), bytes)? {
-            CandidateInput::Dylib(lib) => {
-                let key = self.ctx.register_new(&lib);
-                Ok(ResolvedModule::new_raw(key, lib))
-            }
+            CandidateInput::Reader(reader) => Ok(ResolvedKey::load(shortname.to_owned(), reader)),
             CandidateInput::Script(libs) => self.resolve_script(visible, rpath, runpath, libs),
         }
     }
 
-    fn load_candidate(&self, path: &str, bytes: Option<&[u8]>) -> Result<CandidateInput> {
+    fn load_candidate(
+        &self,
+        path: &str,
+        bytes: Option<&'bytes [u8]>,
+    ) -> Result<CandidateInput<'bytes>> {
         match bytes {
             Some(bytes) => self.load_candidate_bytes(path, bytes),
             None => self.load_candidate_file(path),
         }
     }
 
-    fn load_candidate_bytes(&self, path: &str, bytes: &[u8]) -> Result<CandidateInput> {
+    fn load_candidate_bytes(
+        &self,
+        path: &str,
+        bytes: &'bytes [u8],
+    ) -> Result<CandidateInput<'bytes>> {
         if is_elf_input(bytes) {
-            Ok(CandidateInput::Dylib(ElfLibrary::load_binary(bytes, path)?))
+            Ok(CandidateInput::Reader(Box::new(ElfBinary::new(
+                path, bytes,
+            ))))
         } else {
             Ok(CandidateInput::Script(get_linker_script_libs(bytes)))
         }
     }
 
-    fn load_candidate_file(&self, path: &str) -> Result<CandidateInput> {
+    fn load_candidate_file(&self, path: &str) -> Result<CandidateInput<'bytes>> {
         let header = crate::os::read_file_limit(path, 64)?;
         if is_elf_input(&header) {
-            Ok(CandidateInput::Dylib(ElfLibrary::load_file(path)?))
+            Ok(CandidateInput::Reader(Box::new(ElfFile::from_path(path)?)))
         } else {
             let content = crate::os::read_file(path)?;
             Ok(CandidateInput::Script(get_linker_script_libs(&content)))
@@ -486,8 +504,8 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
     fn resolve_first<Candidate>(
         &mut self,
         candidates: impl IntoIterator<Item = Candidate>,
-        mut resolve: impl FnMut(&mut Self, Candidate) -> Result<ResolvedModule<String, ExtraData>>,
-    ) -> Result<Option<ResolvedModule<String, ExtraData>>> {
+        mut resolve: impl FnMut(&mut Self, Candidate) -> Result<ResolvedKey<'bytes, String>>,
+    ) -> Result<Option<ResolvedKey<'bytes, String>>> {
         for candidate in candidates {
             match resolve(self, candidate) {
                 Ok(module) => return Ok(Some(module)),
@@ -500,12 +518,12 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
 
     fn resolve_search_paths(
         &mut self,
-        visible: Option<LinkContextView<'_, String, ExtraData>>,
+        visible: Option<&dyn Fn(&str) -> bool>,
         rpath: &[ElfPath],
         runpath: &[ElfPath],
         paths: impl IntoIterator<Item = ElfPath>,
-        bytes: Option<&[u8]>,
-    ) -> Result<Option<ResolvedModule<String, ExtraData>>> {
+        bytes: Option<&'bytes [u8]>,
+    ) -> Result<Option<ResolvedKey<'bytes, String>>> {
         self.resolve_first(paths, |resolver, path| {
             resolver.resolve_candidate_path(visible, rpath, runpath, &path, bytes)
         })
@@ -513,12 +531,12 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
 
     fn resolve_request(
         &mut self,
-        visible: Option<LinkContextView<'_, String, ExtraData>>,
+        visible: Option<&dyn Fn(&str) -> bool>,
         rpath: &[ElfPath],
         runpath: &[ElfPath],
         lib_name: &str,
-        bytes: Option<&[u8]>,
-    ) -> Result<ResolvedModule<String, ExtraData>> {
+        bytes: Option<&'bytes [u8]>,
+    ) -> Result<ResolvedKey<'bytes, String>> {
         let shortname = lib_name.rsplit_once('/').map_or(lib_name, |(_, name)| name);
         if let Some(module) = self.ctx.resolve_existing_by_name(shortname, visible) {
             return Ok(module);
@@ -571,11 +589,13 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
     }
 }
 
-impl ModuleResolver<String, ExtraData> for LinkResolver<'_, '_, '_> {
-    fn load(
+impl<'ctx, 'mgr, 'bytes> KeyResolver<'bytes, String, ExtraData>
+    for LinkResolver<'ctx, 'mgr, 'bytes>
+{
+    fn load_root(
         &mut self,
         key: &String,
-    ) -> core::result::Result<ResolvedModule<String, ExtraData>, elf_loader::Error> {
+    ) -> core::result::Result<ResolvedKey<'bytes, String>, elf_loader::Error> {
         let bytes = if *key == self.root_request {
             self.root_bytes.take()
         } else {
@@ -585,10 +605,10 @@ impl ModuleResolver<String, ExtraData> for LinkResolver<'_, '_, '_> {
             .map_err(into_linker_error)
     }
 
-    fn resolve(
+    fn resolve_dependency(
         &mut self,
         req: &DependencyRequest<'_, String, ExtraData>,
-    ) -> core::result::Result<Option<ResolvedModule<String, ExtraData>>, elf_loader::Error> {
+    ) -> core::result::Result<Option<ResolvedKey<'bytes, String>>, elf_loader::Error> {
         let rpath = req
             .rpath()
             .map(|r| fixup_rpath(req.owner().name(), r))
@@ -597,33 +617,34 @@ impl ModuleResolver<String, ExtraData> for LinkResolver<'_, '_, '_> {
             .runpath()
             .map(|r| fixup_rpath(req.owner().name(), r))
             .unwrap_or_default();
-        self.resolve_request(Some(req.context()), &rpath, &runpath, req.needed(), None)
+        let is_visible = |key: &str| req.is_visible(&key.to_owned());
+        self.resolve_request(Some(&is_visible), &rpath, &runpath, req.needed(), None)
             .map(Some)
             .map_err(into_linker_error)
     }
 }
 
-struct LinkRelocator<'ctx, 'mgr> {
+struct DlopenPlanner<'ctx, 'mgr> {
     ctx: &'ctx OpenContext<'mgr>,
     plan: Option<RelocationPlan>,
 }
 
-impl<'ctx, 'mgr> LinkRelocator<'ctx, 'mgr> {
+impl<'ctx, 'mgr> DlopenPlanner<'ctx, 'mgr> {
     fn new(ctx: &'ctx OpenContext<'mgr>) -> Self {
         Self { ctx, plan: None }
     }
 }
 
-impl ModuleRelocator<String, ExtraData> for LinkRelocator<'_, '_> {
-    fn relocate(
+impl RelocationPlanner<String, ExtraData> for DlopenPlanner<'_, '_> {
+    fn plan(
         &mut self,
-        req: RelocationRequest<'_, String, ExtraData>,
-    ) -> core::result::Result<LoadedDylib, elf_loader::Error> {
+        req: &RelocationRequest<'_, String, ExtraData>,
+    ) -> core::result::Result<RelocationInputs<ExtraData>, elf_loader::Error> {
         if self.plan.is_none() {
-            self.plan = Some(self.ctx.prepare_relocation(req.group_order()));
+            self.plan = Some(self.ctx.prepare_relocation(req.scope()));
         }
 
-        log::debug!("Relocating dylib [{}]", req.key());
+        log::debug!("Planning relocation for dylib [{}]", req.key());
 
         let plan = self
             .plan
@@ -636,20 +657,11 @@ impl ModuleRelocator<String, ExtraData> for LinkRelocator<'_, '_> {
         } else {
             req.raw().is_lazy()
         };
-        let (_, lib, _, _) = req.into_parts();
-
-        let relocator = lib.relocator().scope(plan.relocation_scope.iter());
+        let inputs = RelocationInputs::shared(plan.relocation_scope.clone());
         if is_lazy {
-            relocator
-                .lazy()
-                .share_find_with_lazy()
-                .relocate()
-                .map(|loaded| core::ops::Deref::deref(&loaded).clone())
+            Ok(inputs.lazy())
         } else {
-            relocator
-                .eager()
-                .relocate()
-                .map(|loaded| core::ops::Deref::deref(&loaded).clone())
+            Ok(inputs.eager())
         }
     }
 }
@@ -667,23 +679,24 @@ fn dlopen_impl(path: &str, flags: OpenFlags, bytes: Option<&[u8]>) -> Result<Elf
         return Err(find_lib_error(format!("can not find file: {}", path)));
     }
 
-    let mut link_ctx = LinkContext::<String, ExtraData>::new();
-    let mut resolver = LinkResolver::new(&ctx, path, bytes);
-    let mut relocator = LinkRelocator::new(&ctx);
-    let root = link_ctx.load(path.to_owned(), &mut resolver, &mut relocator)?;
+    let key_resolver = LinkResolver::new(&ctx, path, bytes);
+    let mut link_ctx = ctx.with_manager(|manager| manager.snapshot_link_context());
+    let relocation_planner = DlopenPlanner::new(&ctx);
+    let mut linker = Linker::<String, ExtraData>::new()
+        .map_loader(|_| new_loader())
+        .resolver(key_resolver)
+        .planner(relocation_planner);
+    let root = linker.load(&mut link_ctx, path.to_owned())?;
 
-    let deps = if let Some(plan) = relocator.plan.as_ref() {
-        ctx.complete_relocation();
-        let deps = plan.group_scope.clone();
-        ctx.with_manager_mut(|manager| manager.cache_deps(root.shortname(), deps.clone()));
-        deps
-    } else {
-        ctx.with_manager_mut(|manager| {
-            manager
-                .ensure_deps(root.shortname())
-                .expect("Root library must have a dependency scope")
-        })
-    };
+    ctx.complete_relocation(&link_ctx);
+
+    let deps = link_ctx.dependency_scope(&root.shortname().to_owned());
+    debug_assert!(
+        !deps.is_empty(),
+        "root library must have a dependency scope after linking"
+    );
+    drop(linker);
+    drop(link_ctx);
     Ok(ctx.finish(deps))
 }
 

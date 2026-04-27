@@ -382,9 +382,9 @@ fn init() {
                 iter(Some(callback), null_mut());
             });
 
-            // Compute deps for all host libraries
+            // Publish the host libraries into the committed link graph.
             let mut lock = crate::lock_write!(MANAGER);
-            lock.ensure_all_deps();
+            lock.rebuild_link_ctx();
         }
         log::info!("init: initialization complete");
     });

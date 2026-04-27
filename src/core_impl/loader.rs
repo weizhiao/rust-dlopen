@@ -1,8 +1,8 @@
-use crate::core_impl::traits::AsFilename;
 use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
 use crate::{OpenFlags, Result, error::find_symbol_error};
 use alloc::{
+    borrow::ToOwned,
     boxed::Box,
     ffi::CString,
     format,
@@ -14,17 +14,18 @@ use core::{
     ffi::{c_char, c_int},
     fmt::Debug,
 };
-use elf_loader::input::ElfFile;
 use elf_loader::loader::LifecycleContext;
 use elf_loader::{
     Loader,
     elf::{ElfDyn, ElfPhdr, ElfProgramType},
     image::{LoadedCore, RawDylib, Symbol},
-    input::{ElfBinary, ElfReader},
+    tls::DefaultTlsResolver,
 };
 
 pub(crate) type ElfDylib = RawDylib<ExtraData>;
 pub(crate) type LoadedDylib = LoadedCore<ExtraData>;
+pub(crate) type RuntimeLoader =
+    Loader<elf_loader::os::DefaultMmap, (), ExtraData, DefaultTlsResolver>;
 
 /// Searches for a symbol in a list of relocated libraries.
 ///
@@ -40,13 +41,15 @@ pub(crate) fn find_symbol<'lib, T>(
         .ok_or(find_symbol_error(format!("can not find symbol:{}", name)))
 }
 
-fn from_impl<'a, I>(object: I, file_path: Option<&str>) -> Result<ElfDylib>
-where
-    I: ElfReader + elf_loader::input::IntoElfReader<'a>,
-{
-    let mut dylib = Loader::new()
+pub(crate) fn new_loader() -> RuntimeLoader {
+    Loader::new()
         .with_default_tls_resolver()
         .with_context::<ExtraData>()
+        .with_dylib_post_load(|raw| {
+            let file_path = raw.name().contains('/').then(|| raw.name().to_owned());
+            finalize_raw_dylib(raw, file_path.as_deref());
+            Ok(())
+        })
         .with_init(|ctx: &LifecycleContext| {
             let argc = unsafe { *core::ptr::addr_of!(ARGC) };
             let argv = unsafe { *core::ptr::addr_of!(ARGV) };
@@ -63,11 +66,13 @@ where
                 }
             }
         })
-        .load_dylib(object)?;
+}
+
+pub(crate) fn finalize_raw_dylib(dylib: &mut ElfDylib, file_path: Option<&str>) {
     let needed_libs = dylib
         .needed_libs()
         .iter()
-        .map(|s| s.to_string())
+        .map(|s: &&str| s.to_string())
         .collect::<Vec<_>>();
 
     let name = dylib.name().to_string();
@@ -75,8 +80,8 @@ where
     let dynamic_ptr = dylib
         .phdrs()
         .iter()
-        .find(|p| p.program_type() == ElfProgramType::DYNAMIC)
-        .map(|p| (base + p.p_vaddr()) as *mut ElfDyn)
+        .find(|p: &&ElfPhdr| p.program_type() == ElfProgramType::DYNAMIC)
+        .map(|p: &ElfPhdr| (base + p.p_vaddr()) as *mut ElfDyn)
         .unwrap_or(core::ptr::null_mut());
 
     let user_data = dylib.user_data_mut().unwrap();
@@ -109,8 +114,6 @@ where
             log::warn!("Failed to get file identity for [{}]", path);
         }
     }
-
-    Ok(dylib)
 }
 
 /// Represents a successfully loaded and relocated dynamic library.
@@ -127,21 +130,6 @@ pub struct ElfLibrary {
 impl Debug for ElfLibrary {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Dylib").field("inner", &self.inner).finish()
-    }
-}
-
-impl ElfLibrary {
-    pub(crate) fn load_file(path: impl AsFilename) -> Result<ElfDylib> {
-        let path_ref = path.as_filename();
-        let file = ElfFile::from_path(path_ref)?;
-        from_impl(file, Some(path_ref))
-    }
-
-    /// Load a elf dynamic library from bytes.
-    pub(crate) fn load_binary(bytes: &[u8], path: impl AsFilename) -> Result<ElfDylib> {
-        let file = ElfBinary::new(path.as_filename(), bytes);
-        // For binary loads, we don't have a physical file path to stat
-        from_impl(file, None)
     }
 }
 
