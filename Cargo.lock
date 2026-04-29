@@ -275,7 +275,7 @@ dependencies = [
  "ctor",
  "elf_loader",
  "env_logger",
- "hashbrown",
+ "hashbrown 0.16.1",
  "indexmap",
  "libc",
  "libloading",
@@ -314,13 +314,13 @@ checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
 [[package]]
 name = "elf_loader"
 version = "0.14.1"
-source = "git+https://github.com/weizhiao/Relink.git#08aef7c6fb1c6ba8d6d1f3949a45b1ff829d28e1"
+source = "git+https://github.com/weizhiao/Relink.git#edf67042f71b0fa4079479e9199d599c6fd58383"
 dependencies = [
  "bitflags",
  "cfg-if",
  "elf",
  "foldhash",
- "hashbrown",
+ "hashbrown 0.16.1",
  "libc",
  "log",
  "spin",
@@ -394,13 +394,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "indexmap"
-version = "2.13.0"
+name = "hashbrown"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
+checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+
+[[package]]
+name = "indexmap"
+version = "2.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.17.0",
 ]
 
 [[package]]

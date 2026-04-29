@@ -183,8 +183,7 @@ impl ElfLibrary {
     pub fn flags(&self) -> OpenFlags {
         use crate::core_impl::register::MANAGER;
         crate::lock_read!(MANAGER)
-            .get(self.shortname())
-            .map(|e| e.flags)
+            .flags(self.shortname())
             .unwrap_or(OpenFlags::empty())
     }
 

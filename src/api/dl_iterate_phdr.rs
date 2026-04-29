@@ -73,15 +73,14 @@ impl ElfLibrary {
         let dlpi_adds = reader.adds();
         let dlpi_subs = reader.subs();
         for lib in reader.all_values() {
-            let dylib = lib.dylib_ref();
-            let extra_data = dylib.user_data();
-            let phdrs = dylib.phdrs().unwrap_or(&[]);
+            let extra_data = lib.user_data();
+            let phdrs = lib.phdrs().unwrap_or(&[]);
             if phdrs.is_empty() {
                 continue;
             }
-            let tls_modid = dylib.tls_mod_id().unwrap_or(0);
+            let tls_modid = lib.tls_mod_id().unwrap_or(0);
             let info = DlPhdrInfo {
-                lib_base: lib.dylib_ref().base(),
+                lib_base: lib.base(),
                 lib_name: extra_data
                     .c_name
                     .as_ref()

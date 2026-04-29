@@ -6,7 +6,7 @@ use crate::{
     OpenFlags, Result,
     api::dl_iterate_phdr::CallBack,
     core_impl::loader::{DylibExt, LoadedDylib},
-    core_impl::register::{DylibState, MANAGER, register},
+    core_impl::register::{MANAGER, register_loaded},
 };
 use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, vec::Vec};
 use core::{
@@ -363,11 +363,10 @@ unsafe extern "C" fn callback(info: *mut CDlPhdrInfo, _size: usize, _data: *mut 
         lib.shortname(),
         lib.base()
     );
-    register(
+    register_loaded(
         lib,
         OpenFlags::RTLD_NODELETE | OpenFlags::RTLD_GLOBAL,
         &mut *crate::lock_write!(MANAGER),
-        *DylibState::default().set_relocated(),
     );
     0
 }

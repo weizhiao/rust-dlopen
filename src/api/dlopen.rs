@@ -2,7 +2,7 @@ use crate::{
     OpenFlags, Result,
     core_impl::{
         loader::{DylibExt, ElfLibrary, LoadedDylib, new_loader},
-        register::{DylibState, GlobalDylib, MANAGER, Manager, register},
+        register::{GlobalMeta, LibraryLookup, MANAGER, Manager, register_pending},
         traits::AsFilename,
         types::ExtraData,
     },
@@ -23,10 +23,11 @@ use core::{
     cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
 };
+use elf_loader::image::RawDylib;
 use elf_loader::input::{ElfBinary, ElfFile, ElfReader};
 use elf_loader::linker::{
-    DependencyRequest, KeyResolver, LinkContext, Linker, RelocationInputs, RelocationPlanner,
-    RelocationRequest, ResolvedKey,
+    DependencyRequest, KeyResolver, LinkContext, Linker, LoadObserver, RelocationInputs,
+    RelocationPlanner, RelocationRequest, ResolvedKey, StagedDylib, VisibleModules,
 };
 use spin::{Lazy, RwLockWriteGuard};
 
@@ -187,14 +188,6 @@ impl<'a> OpenContext<'a> {
         self.added_names.borrow_mut().insert(shortname);
     }
 
-    fn with_added_libraries(&self, manager: &mut Manager, mut visit: impl FnMut(&mut GlobalDylib)) {
-        let added_names = self.added_names.borrow();
-        for name in added_names.iter() {
-            let lib = manager.get_mut(name).expect("Library must be registered");
-            visit(lib);
-        }
-    }
-
     fn remove_added_libraries(&self, manager: &mut Manager) {
         let added_names = self.added_names.borrow();
         for name in added_names.iter() {
@@ -210,12 +203,12 @@ impl<'a> OpenContext<'a> {
 
     fn await_registered(
         &self,
-        mut lookup: impl FnMut(&Manager) -> Option<GlobalDylib>,
-    ) -> Option<GlobalDylib> {
+        mut lookup: impl for<'mgr> FnMut(&'mgr Manager) -> Option<LibraryLookup<'mgr>>,
+    ) -> Option<LibraryLookup<'static>> {
         loop {
-            let entry = self.with_manager(|manager| lookup(manager));
+            let entry = self.with_manager(|manager| lookup(manager).map(LibraryLookup::into_owned));
             match entry {
-                Some(lib) if lib.state.is_relocated() || self.has_added_name(lib.shortname()) => {
+                Some(lib) if lib.is_relocated() || self.has_added_name(lib.shortname()) => {
                     return Some(lib);
                 }
                 Some(_) => self.wait_for_other_thread(),
@@ -224,8 +217,8 @@ impl<'a> OpenContext<'a> {
         }
     }
 
-    fn finish_existing(&mut self, path: &str, lib: GlobalDylib) -> ElfLibrary {
-        let canonical_shortname = lib.shortname().to_owned();
+    fn finish_existing(&mut self, path: &str, lib: LibraryLookup<'static>) -> ElfLibrary {
+        let canonical_shortname = lib.into_shortname_owned();
         log::info!(
             "dlopen: Found existing library [{}] (canonical name: {})",
             path,
@@ -241,17 +234,8 @@ impl<'a> OpenContext<'a> {
     }
 
     fn prepare_relocation(&self, group_scope: &[LoadedDylib]) -> RelocationPlan {
-        let group_keys = group_scope
-            .iter()
-            .map(|lib| lib.shortname().to_owned())
-            .collect::<Vec<_>>();
-        let relocation_scope = self.with_manager_mut(|manager| {
-            self.register_pending_group(manager, &group_keys, group_scope);
-            self.with_added_libraries(manager, |lib| {
-                lib.state.set_relocating();
-            });
-            manager.relocation_scope(group_scope, self.flags)
-        });
+        let relocation_scope =
+            self.with_manager_mut(|manager| manager.relocation_scope(group_scope, self.flags));
         drop(self.take_lock());
         RelocationPlan { relocation_scope }
     }
@@ -280,21 +264,27 @@ impl<'a> OpenContext<'a> {
     }
 
     /// Pure name/alias lookup with spin-wait for concurrent loads.
-    fn wait_for_library(&self, shortname: &str) -> Option<GlobalDylib> {
-        self.await_registered(|manager| manager.get(shortname).cloned())
+    fn wait_for_library(&self, shortname: &str) -> Option<LibraryLookup<'static>> {
+        self.await_registered(|manager| manager.lookup(shortname))
     }
 
     /// Stat `path` once and look up by inode. On hit, records `shortname` as an alias.
-    fn inode_fallback(&self, path: &str, shortname: &str) -> Result<Option<GlobalDylib>> {
+    fn inode_fallback(
+        &self,
+        path: &str,
+        shortname: &str,
+    ) -> Result<Option<LibraryLookup<'static>>> {
         let req_identity = crate::os::get_file_inode(path)?;
-        let entry =
-            self.await_registered(|manager| manager.get_by_identity(&req_identity).cloned());
+        let entry = self.await_registered(|manager| manager.lookup_by_identity(&req_identity));
 
-        if let Some(lib) = entry.as_ref().filter(|lib| lib.state.is_relocated()) {
+        if let Some(lib) = entry
+            .as_ref()
+            .filter(|lib| lib.is_relocated() || self.has_added_name(lib.shortname()))
+        {
             log::info!(
                 "dlopen: Found existing library by inode match: requested [{}], existing [{}] (dev={}, ino={})",
                 shortname,
-                lib.dylib_ref().name(),
+                lib.name().unwrap_or(lib.shortname()),
                 req_identity.dev,
                 req_identity.ino
             );
@@ -308,10 +298,10 @@ impl<'a> OpenContext<'a> {
 
     fn resolve_found(
         &self,
-        lib: GlobalDylib,
+        lib: LibraryLookup<'static>,
         visible: Option<&dyn Fn(&str) -> bool>,
     ) -> Option<ResolvedKey<'static, String>> {
-        let shortname = lib.shortname().to_owned();
+        let shortname = lib.into_shortname_owned();
         if visible.map_or(true, |is_visible| is_visible(&shortname)) {
             Some(ResolvedKey::existing(shortname))
         } else {
@@ -347,28 +337,27 @@ impl<'a> OpenContext<'a> {
             .and_then(|lib| self.resolve_found(lib, visible)))
     }
 
-    fn register_pending_group(
-        &self,
-        manager: &mut Manager,
-        group_keys: &[String],
-        group_scope: &[LoadedDylib],
-    ) {
-        for (key, lib) in group_keys.iter().zip(group_scope.iter()) {
-            if manager.get(key).is_some() {
-                continue;
-            }
-
+    fn register_pending(&self, key: &str, raw: &RawDylib<ExtraData>) {
+        self.with_manager_mut(|manager| {
+            let lib = unsafe { LoadedDylib::from_core(raw.core()) };
             let shortname = lib.shortname().to_owned();
             debug_assert_eq!(
-                shortname, *key,
-                "resolved load key must match the placeholder shortname"
+                shortname, key,
+                "resolved load key must match the staged dylib shortname"
             );
-            register(lib.clone(), self.flags, manager, DylibState::default());
+
+            assert!(
+                manager.lookup(&shortname).is_none(),
+                "staged dylib [{}] is already registered",
+                shortname
+            );
+
+            register_pending(lib, self.flags, manager);
             self.record_added_name(shortname);
-        }
+        });
     }
 
-    fn complete_relocation(&self, link_ctx: &LinkContext<String, ExtraData>) {
+    fn complete_relocation(&self, link_ctx: &LinkContext<String, ExtraData, GlobalMeta>) {
         let mut lock = self
             .take_lock()
             .unwrap_or_else(|| crate::lock_write!(MANAGER));
@@ -380,10 +369,15 @@ impl<'a> OpenContext<'a> {
                 .cloned()
                 .collect::<Vec<_>>(),
         );
-        self.with_added_libraries(&mut lock, |lib| {
-            lib.state.set_relocated();
-        });
         self.replace_lock(lock);
+    }
+
+    fn library_scope(&self, root: &str) -> Arc<[LoadedDylib]> {
+        self.with_manager(|manager| {
+            manager
+                .library_scope(root)
+                .expect("root library must have a dependency scope after linking")
+        })
     }
 
     /// Finalizes the operation and returns the `ElfLibrary`.
@@ -408,6 +402,52 @@ struct LinkResolver<'ctx, 'mgr, 'bytes> {
     ctx: &'ctx OpenContext<'mgr>,
     root_request: String,
     root_bytes: Option<&'bytes [u8]>,
+}
+
+struct PendingRegistrationObserver<'ctx, 'mgr> {
+    ctx: &'ctx OpenContext<'mgr>,
+}
+
+struct DlopenVisible<'ctx, 'mgr> {
+    ctx: &'ctx OpenContext<'mgr>,
+}
+
+impl<'ctx, 'mgr> PendingRegistrationObserver<'ctx, 'mgr> {
+    fn new(ctx: &'ctx OpenContext<'mgr>) -> Self {
+        Self { ctx }
+    }
+}
+
+impl<'ctx, 'mgr> DlopenVisible<'ctx, 'mgr> {
+    fn new(ctx: &'ctx OpenContext<'mgr>) -> Self {
+        Self { ctx }
+    }
+}
+
+impl LoadObserver<String, ExtraData> for PendingRegistrationObserver<'_, '_> {
+    fn on_staged_dylib(
+        &mut self,
+        event: StagedDylib<'_, String, ExtraData>,
+    ) -> core::result::Result<(), elf_loader::Error> {
+        self.ctx.register_pending(event.key(), event.raw());
+        Ok(())
+    }
+}
+
+impl VisibleModules<String, ExtraData> for DlopenVisible<'_, '_> {
+    fn contains_key(&self, key: &String) -> bool {
+        self.ctx
+            .with_manager(|manager| manager.visible_contains(key))
+    }
+
+    fn direct_deps(&self, key: &String) -> Option<Box<[String]>> {
+        self.ctx
+            .with_manager(|manager| manager.visible_direct_deps(key))
+    }
+
+    fn loaded(&self, key: &String) -> Option<LoadedDylib> {
+        self.ctx.with_manager(|manager| manager.visible_loaded(key))
+    }
 }
 
 enum CandidateInput<'bytes> {
@@ -589,7 +629,7 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
     }
 }
 
-impl<'ctx, 'mgr, 'bytes> KeyResolver<'bytes, String, ExtraData>
+impl<'ctx, 'mgr, 'bytes> KeyResolver<'bytes, String, ExtraData, GlobalMeta>
     for LinkResolver<'ctx, 'mgr, 'bytes>
 {
     fn load_root(
@@ -607,7 +647,7 @@ impl<'ctx, 'mgr, 'bytes> KeyResolver<'bytes, String, ExtraData>
 
     fn resolve_dependency(
         &mut self,
-        req: &DependencyRequest<'_, String, ExtraData>,
+        req: &DependencyRequest<'_, String, ExtraData, GlobalMeta>,
     ) -> core::result::Result<Option<ResolvedKey<'bytes, String>>, elf_loader::Error> {
         let rpath = req
             .rpath()
@@ -680,21 +720,21 @@ fn dlopen_impl(path: &str, flags: OpenFlags, bytes: Option<&[u8]>) -> Result<Elf
     }
 
     let key_resolver = LinkResolver::new(&ctx, path, bytes);
-    let mut link_ctx = ctx.with_manager(|manager| manager.snapshot_link_context());
+    let pending_observer = PendingRegistrationObserver::new(&ctx);
+    let visible_modules = DlopenVisible::new(&ctx);
+    let mut link_ctx = LinkContext::new();
     let relocation_planner = DlopenPlanner::new(&ctx);
     let mut linker = Linker::<String, ExtraData>::new()
         .map_loader(|_| new_loader())
+        .visible_modules(visible_modules)
         .resolver(key_resolver)
+        .observer(pending_observer)
         .planner(relocation_planner);
     let root = linker.load(&mut link_ctx, path.to_owned())?;
 
     ctx.complete_relocation(&link_ctx);
 
-    let deps = link_ctx.dependency_scope(&root.shortname().to_owned());
-    debug_assert!(
-        !deps.is_empty(),
-        "root library must have a dependency scope after linking"
-    );
+    let deps = ctx.library_scope(root.shortname());
     drop(linker);
     drop(link_ctx);
     Ok(ctx.finish(deps))
