@@ -1,10 +1,13 @@
-use crate::{ElfLibrary, Error, Result, core_impl::register::MANAGER};
+use crate::{ElfLibrary, Error, Result, core_impl::MANAGER};
 use alloc::boxed::Box;
 use core::{
     ffi::{c_char, c_int, c_ulonglong, c_void},
     ptr::null_mut,
 };
-use elf_loader::{elf::ElfPhdr, tls::DefaultTlsResolver};
+use elf_loader::{
+    elf::ElfPhdr,
+    tls::{DefaultTlsResolver, TlsModuleId},
+};
 
 /// same as dl_phdr_info in libc
 #[repr(C)]
@@ -78,7 +81,7 @@ impl ElfLibrary {
             if phdrs.is_empty() {
                 continue;
             }
-            let tls_modid = lib.tls_mod_id().unwrap_or(0);
+            let tls_modid = lib.tls_mod_id();
             let info = DlPhdrInfo {
                 lib_base: lib.base(),
                 lib_name: extra_data
@@ -89,8 +92,8 @@ impl ElfLibrary {
                 phdrs,
                 dlpi_adds,
                 dlpi_subs,
-                tls_modid,
-                tls_data: DefaultTlsResolver::get_tls_data(tls_modid),
+                tls_modid: tls_modid.unwrap_or(TlsModuleId::RESERVED).get(),
+                tls_data: tls_modid.and_then(DefaultTlsResolver::get_tls_data),
             };
             callback(&info)?;
         }

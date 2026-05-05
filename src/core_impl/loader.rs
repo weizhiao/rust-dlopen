@@ -1,6 +1,4 @@
-#[cfg(not(feature = "std"))]
-use crate::core_impl::tls::ActiveTlsResolver;
-use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
+use super::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
 use crate::{OpenFlags, Result, error::find_symbol_error};
 use alloc::{
@@ -18,8 +16,6 @@ use core::{
     ptr::null,
 };
 use elf_loader::loader::LifecycleContext;
-#[cfg(feature = "std")]
-use elf_loader::tls::DefaultTlsResolver as ActiveTlsResolver;
 use elf_loader::{
     Loader,
     elf::{ElfDyn, ElfPhdr, ElfProgramType},
@@ -30,6 +26,11 @@ pub(crate) type ElfDylib = RawDynamic<ExtraData>;
 pub(crate) type LoadedDylib = LoadedCore<ExtraData>;
 pub(crate) type RuntimeLoader =
     Loader<elf_loader::os::DefaultMmap, (), ExtraData, ActiveTlsResolver>;
+
+#[cfg(not(feature = "std"))]
+use crate::rtld::ActiveTlsResolver;
+#[cfg(feature = "std")]
+use elf_loader::tls::DefaultTlsResolver as ActiveTlsResolver;
 
 /// Searches for a symbol in a list of relocated libraries.
 ///
@@ -204,7 +205,7 @@ impl ElfLibrary {
 
     /// Get the current flags of the dynamic library from the global registry.
     pub fn flags(&self) -> OpenFlags {
-        use crate::core_impl::register::MANAGER;
+        use super::register::MANAGER;
         crate::lock_read!(MANAGER)
             .flags(self.shortname())
             .unwrap_or(OpenFlags::empty())

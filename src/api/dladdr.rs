@@ -1,4 +1,4 @@
-use crate::{ElfLibrary, core_impl::register::addr2dso};
+use crate::{ElfLibrary, core_impl::addr2dso};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     fmt::Debug,

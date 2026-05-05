@@ -6,7 +6,7 @@ cfg_if::cfg_if! {
         mod unix;
         pub(crate) use unix::*;
     } else {
-        use crate::core_impl::types::FileIdentity;
+        use crate::core_impl::FileIdentity;
 
         pub(crate) fn read_file(_path: &str) -> crate::Result<alloc::boxed::Box<[u8]>> {
             Err(crate::Error::Unsupported)

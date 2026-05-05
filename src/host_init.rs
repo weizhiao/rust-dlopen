@@ -1,12 +1,12 @@
 use crate::abi::auxv::{AT_BASE, AT_PHDR, AT_PHNUM};
 use crate::api::dl_iterate_phdr::CDlPhdrInfo;
-use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::GDBDebug;
 use crate::{
     OpenFlags, Result,
     api::dl_iterate_phdr::CallBack,
-    core_impl::loader::{DylibExt, LoadedDylib},
-    core_impl::register::{MANAGER, register_loaded},
+    core_impl::{
+        ARGC, ARGV, DylibExt, ENVP, ExtraData, LinkMap, LoadedDylib, MANAGER, register_loaded,
+    },
 };
 use alloc::{borrow::ToOwned, boxed::Box, ffi::CString, vec::Vec};
 use core::{
@@ -16,7 +16,7 @@ use core::{
 };
 use elf_loader::{
     elf::{ElfDyn, ElfDynamicTag, ElfHeader, ElfPhdr, ElfProgramType},
-    tls::DefaultTlsResolver,
+    tls::{DefaultTlsResolver, TlsTpOffset},
 };
 use spin::Once;
 
@@ -298,7 +298,9 @@ unsafe fn from_raw(
             use_phdrs,
             (base as *mut c_void, len),
             |_ptr, _len| Ok(()),
-            extra.and_then(|e| e.2).map(|o| -(o as isize)),
+            extra
+                .and_then(|e| e.2)
+                .map(|o| TlsTpOffset::new(-(o as isize))),
             user_data,
         )
     }

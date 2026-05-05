@@ -44,6 +44,8 @@ mod abi;
 pub mod api;
 mod core_impl;
 mod error;
+#[cfg(feature = "std")]
+mod host_init;
 mod os;
 #[cfg(not(feature = "std"))]
 pub mod rtld;
@@ -52,8 +54,7 @@ mod utils;
 use bitflags::bitflags;
 
 pub use crate::api::dlsym::{dlsym_default, dlsym_next};
-pub use crate::core_impl::loader::ElfLibrary;
-pub use crate::core_impl::traits::AsFilename;
+pub use crate::core_impl::{AsFilename, ElfLibrary};
 pub use crate::error::Error;
 pub use elf_loader::image::Symbol;
 

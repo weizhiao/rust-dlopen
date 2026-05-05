@@ -8,6 +8,7 @@ mod globals;
 mod memory;
 mod runtime;
 mod symbols;
+mod tls;
 mod versions;
 
 #[doc(hidden)]

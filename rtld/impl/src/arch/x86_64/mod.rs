@@ -19,3 +19,9 @@ pub(crate) const X86_PLATFORMS: [[u8; 9]; 4] = [
     *b"haswell\0\0",
     *b"xeon_phi\0",
 ];
+
+pub(crate) fn install_thread_pointer(tp: *mut u8) -> bool {
+    const ARCH_SET_FS: usize = 0x1002;
+    let res = unsafe { syscalls::raw_syscall!(syscalls::Sysno::arch_prctl, ARCH_SET_FS, tp) };
+    res <= -4096isize as usize
+}

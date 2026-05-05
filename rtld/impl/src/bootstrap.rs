@@ -20,7 +20,7 @@ use dlopen_rs::rtld::{
     bootstrap::{BootstrapMode, BootstrapObject, BootstrapState},
     debug::{LinkMap, RDebug, RT_CONSISTENT},
     elf::{ElfDyn, ElfDynamicTag, ElfHeader, ElfPhdr, ElfProgramType, ElfRelType},
-    stage1,
+    register_tls_backend, stage1,
 };
 
 #[derive(Copy, Clone)]
@@ -135,6 +135,7 @@ pub extern "C" fn rtld_bootstrap(stack: *const usize, rtld_dynamic: *const usize
     if !unsafe { relocate_rtld_relative(rtld_dynamic_info, rtld_load_bias) } {
         exit(RTLD_FATAL_EXIT_STATUS);
     }
+    register_tls_backend(crate::tls::backend());
     unsafe {
         addr_of_mut!(_dl_argv).write(argv);
         addr_of_mut!(__libc_stack_end).write(stack);

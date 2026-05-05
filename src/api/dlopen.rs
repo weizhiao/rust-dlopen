@@ -1,12 +1,10 @@
 #[cfg(not(feature = "std"))]
-use crate::core_impl::loader::shortname_from_name;
+use crate::core_impl::shortname_from_name;
 use crate::{
     OpenFlags, Result,
     core_impl::{
-        loader::{DylibExt, ElfDylib, ElfLibrary, LoadedDylib, new_loader},
-        register::{GlobalMeta, LibraryLookup, MANAGER, Manager, register_pending},
-        traits::AsFilename,
-        types::ExtraData,
+        AsFilename, DylibExt, ENVP, ElfDylib, ElfLibrary, ExtraData, GlobalMeta, LibraryLookup,
+        LoadedDylib, MANAGER, Manager, new_loader, register_pending,
     },
     error::find_lib_error,
     utils::{ld_cache::LdCache, linker_script::get_linker_script_libs},
@@ -61,7 +59,7 @@ impl ElfPath {
 
 fn get_env(name: &str) -> Option<&'static str> {
     unsafe {
-        let mut cur = crate::core_impl::types::ENVP;
+        let mut cur = ENVP;
         if cur.is_null() {
             return None;
         }

@@ -1,8 +1,8 @@
-use crate::{
-    ElfLibrary, OpenFlags,
-    core_impl::loader::{DylibExt, LoadedDylib},
-    core_impl::types::{ExtraData, FileIdentity},
+use super::{
+    loader::{DylibExt, LoadedDylib},
+    types::{ExtraData, FileIdentity},
 };
+use crate::{ElfLibrary, OpenFlags};
 use alloc::{
     borrow::{Cow, ToOwned},
     boxed::Box,
@@ -765,7 +765,7 @@ pub(crate) fn addr2dso(addr: usize) -> Option<ElfLibrary> {
     })
 }
 
-pub(crate) fn register_atexit(
+fn register_atexit(
     dso_handle: *mut c_void,
     func: unsafe extern "C" fn(*mut c_void),
     arg: *mut c_void,
@@ -789,7 +789,7 @@ unsafe impl Sync for Destructor {}
 
 static DESTRUCTORS: Lazy<RwLock<Vec<Destructor>>> = Lazy::new(|| RwLock::new(Vec::new()));
 
-pub(crate) fn finalize(dso_handle: *mut c_void, range: Option<core::ops::Range<usize>>) {
+fn finalize(dso_handle: *mut c_void, range: Option<core::ops::Range<usize>>) {
     let mut to_run = Vec::new();
     {
         let mut range = range;

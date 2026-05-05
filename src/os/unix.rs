@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::core_impl::types::FileIdentity;
+use crate::core_impl::FileIdentity;
 use alloc::boxed::Box;
 
 pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {

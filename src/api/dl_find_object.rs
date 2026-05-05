@@ -1,4 +1,4 @@
-use crate::core_impl::{register::addr2dso, types::LinkMap};
+use crate::core_impl::{LinkMap, addr2dso};
 use core::{
     ffi::{c_int, c_void},
     ptr::null_mut,

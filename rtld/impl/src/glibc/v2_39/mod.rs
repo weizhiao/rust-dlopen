@@ -9,6 +9,10 @@ use crate::arch::{
     X86_CPU_FEATURES_SIZE, X86_HWCAP_FLAGS, X86_PLATFORMS,
 };
 
+mod tls;
+
+pub(crate) use tls::init_initial_thread_control_block;
+
 const RTLD_GLOBAL_SIZE: usize = 4352;
 const RTLD_GLOBAL_RO_SIZE: usize = 952;
 const LINK_NAMESPACE_SIZE: usize = 160;
