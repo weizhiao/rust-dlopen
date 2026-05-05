@@ -1,6 +1,6 @@
 #![cfg(target_arch = "x86_64")]
 
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::PathBuf, process::Command, sync::OnceLock};
 
 const RTLD_TARGET: &str = "x86_64-unknown-linux-none";
 
@@ -46,8 +46,30 @@ fn command_output(program: &str, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("command output must be utf-8")
 }
 
-fn build_rtld() -> PathBuf {
-    let status = Command::new("cargo")
+fn cargo_is_nightly() -> bool {
+    static IS_NIGHTLY: OnceLock<bool> = OnceLock::new();
+
+    *IS_NIGHTLY.get_or_init(|| {
+        Command::new("cargo")
+            .arg("--version")
+            .output()
+            .map(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("-nightly")
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn build_rtld() -> Option<PathBuf> {
+    if !cargo_is_nightly() {
+        eprintln!(
+            "skipping rtld artifact test because building the rtld artifact requires nightly Cargo"
+        );
+        return None;
+    }
+
+    let output = Command::new("cargo")
         .args([
             "-Z",
             "build-std=core,alloc,compiler_builtins",
@@ -58,10 +80,15 @@ fn build_rtld() -> PathBuf {
             "--target",
             RTLD_TARGET,
         ])
-        .status()
+        .output()
         .expect("failed to invoke cargo");
-    assert!(status.success(), "rtld release build failed");
-    rtld_path()
+    assert!(
+        output.status.success(),
+        "rtld release build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(rtld_path())
 }
 
 fn test_work_dir(name: &str) -> PathBuf {
@@ -72,7 +99,9 @@ fn test_work_dir(name: &str) -> PathBuf {
 
 #[test]
 fn rtld_artifact_has_interpreter_shape() {
-    let path = build_rtld();
+    let Some(path) = build_rtld() else {
+        return;
+    };
     assert!(path.exists(), "missing artifact at {}", path.display());
     let path = path.to_str().unwrap();
 
@@ -156,7 +185,9 @@ fn rtld_artifact_can_be_loaded_as_pt_interp() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -212,7 +243,9 @@ fn rtld_artifact_can_start_glibc_program() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -265,7 +298,9 @@ fn rtld_artifact_can_run_simple_c_program() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -324,7 +359,9 @@ fn rtld_artifact_publishes_glibc_rtld_globals() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -404,7 +441,9 @@ int main(void) {
 
 #[test]
 fn rtld_artifact_has_command_line_help_and_version() {
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -453,7 +492,9 @@ fn rtld_artifact_command_line_can_verify_and_list_simple_c_program() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -523,7 +564,9 @@ fn rtld_artifact_command_line_can_run_simple_c_program_directly() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -579,7 +622,9 @@ fn rtld_artifact_can_tail_jump_dependency_free_program() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 
@@ -635,7 +680,9 @@ fn rtld_artifact_handles_main_relocations_with_full_loader() {
         return;
     }
 
-    let _artifact = build_rtld();
+    let Some(_artifact) = build_rtld() else {
+        return;
+    };
     let interp = rtld_interp_path();
     assert!(interp.exists(), "missing {}", interp.display());
 

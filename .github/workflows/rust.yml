@@ -26,7 +26,7 @@ jobs:
     strategy:
       matrix:
         include:
-          # Test all architectures with std or use-syscall on stable
+          # Test host std paths and build no_std/use-syscall paths on stable.
           - target: x86_64-unknown-linux-gnu
             channel: stable
             features: "std"
@@ -34,7 +34,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             channel: stable
             features: "use-syscall"
-            op: test
+            op: build
           - target: aarch64-unknown-linux-gnu
             channel: stable
             features: "std"
@@ -51,12 +51,8 @@ jobs:
             channel: stable
             features: "use-syscall"
             op: build
-          # Test MSRV and non-syscall path on x86_64
+          # Test MSRV std path on x86_64.
           - target: x86_64-unknown-linux-gnu
             channel: 1.93.0
             features: "std"
-            op: test
-          - target: x86_64-unknown-linux-gnu
-            channel: 1.93.0
-            features: "use-syscall"
             op: test

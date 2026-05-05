@@ -10,89 +10,172 @@
 </p>
 
 <p align="center">
-  <b>A high-performance, pure-Rust implementation of an ELF dynamic linker.</b>
+  <b>A pure-Rust ELF dynamic linker, dlopen compatibility layer, and experimental Linux rtld.</b>
 </p>
 
 <p align="center">
   <a href="README.md">English</a> | <a href="README-zh_cn.md">简体中文</a>
 </p>
 
-`dlopen-rs` is a full-featured dynamic linker implemented entirely in Rust. It provides a set of Rust-friendly interfaces for manipulating dynamic libraries, as well as C-compatible interfaces consistent with `libc` behavior.
+`dlopen-rs` provides a Rust-friendly dynamic library loading API and exports libc-compatible entry points such as `dlopen`, `dlsym`, `dladdr`, and `dl_iterate_phdr`. The project moves ELF loading, dependency resolution, relocation, symbol lookup, and TLS management into Rust, while steadily growing an rtld implementation that can eventually replace glibc `ld.so`.
 
-## 🚀 Key Features
+## Capabilities
 
-- **Pure Rust:** Zero dependency on C runtime for core loading and linking logic.
-- **`#![no_std]` Support:** Can be used in bare-metal environments, kernels, or embedded systems.
-- **`LD_PRELOAD` Compatible:** Can replace `libc`'s `dlopen`, `dlsym`, and `dl_iterate_phdr` without code modification.
-- **Modern API:** Offers a safe and ergonomic Rust API for dynamic library management.
+- **Dynamic loading:** Load ELF shared objects from paths or in-memory bytes.
+- **Dependency resolution:** Handle `DT_NEEDED`, `RPATH`, `RUNPATH`, `ld.so.cache`, and common system search paths.
+- **Symbol lookup:** Provide Rust APIs and C ABI entry points, including global lookup, dependency scopes, `RTLD_NEXT`, and `RTLD_DEFAULT`.
+- **Relocation:** Support regular dynamic relocations, PLT/GOT relocation, lazy binding, and RELR.
+- **TLS:** Support dynamic TLS, static TLS registration, and initial-thread TLS needed during rtld startup.
+- **`no_std`:** Run the core loading path without `std`, with an optional Linux syscall backend via `use-syscall`.
+- **Replacement rtld:** Build an experimental ELF interpreter that advertises itself as `ld-linux-x86-64.so.2`.
 
-## 🛠 Usage
+## Project Status
 
-### As a Rust Library
-Add `dlopen-rs` to your `Cargo.toml`:
+| Area | Status |
+| --- | --- |
+| Rust `ElfLibrary` API | Usable |
+| libc-compatible dlopen/dlsym/dladdr/dl_iterate_phdr | Usable |
+| `LD_PRELOAD` compatibility library | Usable |
+| `no_std` + syscall loading path | Usable, still being refined |
+| Replacement rtld | Experimental, focused on x86_64 Linux/glibc compatibility |
+
+## Installation
+
+For regular Rust programs:
+
 ```toml
 [dependencies]
 dlopen-rs = "0.8.0"
 ```
 
-### As an `LD_PRELOAD` Replacement
+For `no_std` with the syscall backend:
 
-You can use `dlopen-rs` to intercept standard library calls:
-
-```shell
-# 1. Compile the compatibility library
-$ cargo build -r -p cdylib
-
-# 2. Compile your application/example
-$ cargo build -r -p dlopen-rs --example preload
-
-# 3. Interpose libc implementations
-$ RUST_LOG=trace LD_PRELOAD=./target/release/libdlopen.so ./target/release/examples/preload
+```toml
+[dependencies]
+dlopen-rs = { version = "0.8.0", default-features = false, features = ["use-syscall"] }
 ```
 
-## 📊 Architecture Support
+## Rust API Example
 
-| Architecture | Load Support | Lazy Binding | Test Status |
-| ------------ | ------------ | ------------ | ----------- |
-| **x86_64**   | ✅            | ✅            | ✅ (CI)      |
-| **aarch64**  | ✅            | ✅            | 🛠️ (Manual)  |
-| **riscv64**  | ✅            | ✅            | 🛠️ (Manual)  |
+Build the example shared object first:
 
-## 💻 Example
+```shell
+cargo build --release -p example_dylib
+```
+
+Then run the `dlopen-rs` example:
+
+```shell
+cargo run --release --example dlopen
+```
+
+Core usage:
 
 ```rust
 use dlopen_rs::{ElfLibrary, OpenFlags, Result};
 
 fn main() -> Result<()> {
-    // 1. Load the library
     let lib = ElfLibrary::dlopen("./target/release/libexample.so", OpenFlags::RTLD_LAZY)?;
-
-    // 2. Get and call a simple function: fn(i32, i32) -> i32
     let add = unsafe { lib.get::<fn(i32, i32) -> i32>("add")? };
-    println!("add(1, 1) = {}", add(1, 1));
 
+    println!("add(1, 1) = {}", add(1, 1));
     Ok(())
 }
 ```
 
-## ⚙️ Feature Flags
+## LD_PRELOAD Compatibility Library
 
-| Feature       | Default | Description                                                              |
-| ------------- | ------- | ------------------------------------------------------------------------ |
-| `use-syscall` | ❌       | Uses direct syscalls to load libraries (useful for `no_std`).            |
-| `version`     | ❌       | Enables support for ELF symbol versioning.                               |
-| `std`         | ✅       | Enables standard library integration. Disable for `no_std` environments. |
+The `cdylib` crate builds a libc dlopen-family compatibility library:
 
-## ⚖️ License
+```shell
+cargo build --release -p cdylib
+cargo build --release -p example_dylib
+cargo build --release --example preload
 
-Licensed under the [Apache License 2.0](https://www.google.com/search?q=LICENSE).
+RUST_LOG=trace \
+LD_PRELOAD=./target/release/libdlopen.so \
+./target/release/examples/preload
+```
 
-## 🤝 Contribution
+This is useful for checking how well `dlopen-rs` can interpose existing `dlopen`/`dlsym` calls.
 
-Contributions are welcome! If you encounter issues or have ideas for performance improvements, please open an Issue or PR. For specific GDB-related debugging issues, please refer to [TroubleshootingGdb.md](TroubleshootingGdb.md).
+## Replacement rtld
 
-<a href="https://github.com/weizhiao/rust-dlopen/graphs/contributors">
-  <img src="https://contributors-img.web.app/image?repo=weizhiao/rust-dlopen" alt="Project Contributors" />
+The `rtld` crate builds an experimental ELF interpreter intended to grow into a replacement for glibc `ld-linux-x86-64.so.2`:
+
+```shell
+cargo build-rtld
+```
+
+Artifacts are written to:
+
+```text
+target/x86_64-unknown-linux-none/release/librtld.so
+target/x86_64-unknown-linux-none/release/ld-linux-x86-64.so.2
+```
+
+This path uses `x86_64-unknown-linux-none`, `-Z build-std=core,alloc,compiler_builtins`, and custom linker arguments. Use a nightly toolchain, or another toolchain capable of `-Z build-std`, when building this target.
+
+## Development Commands
+
+The repository defines Cargo aliases that keep host/std checks separate from rtld/no_std checks:
+
+```shell
+cargo check-host
+cargo check-rtld
+cargo build-rtld
+```
+
+Common validation set:
+
+```shell
+cargo check-host
+cargo check-rtld
+cargo check --no-default-features --lib
+cargo check --no-default-features --features use-syscall --lib
+cargo test --test rtld_artifact rtld_artifact_has_interpreter_shape
+```
+
+## Feature Flags
+
+| Feature | Default | Description |
+| --- | --- | --- |
+| `std` | Yes | Enables standard library integration, host initialization, and ctor support. |
+| `use-syscall` | No | Uses the Linux syscall backend, mainly for `no_std` and rtld paths. |
+| `version` | No | Enables ELF symbol version support. |
+
+## Architecture Support
+
+| Architecture | Dynamic Loading | Lazy Binding | Replacement rtld |
+| --- | --- | --- | --- |
+| x86_64 Linux | Supported | Supported | Experimental |
+| aarch64 | Supported | Supported | Not enabled |
+| riscv64 | Supported | Some paths still being validated | Not enabled |
+
+## Repository Layout
+
+```text
+src/              Rust API, C ABI, loader/register core logic
+src/rtld.rs       no_std rtld entry points and rtld-specific TLS glue
+src/host_init.rs  std/host import of objects already loaded by the host ld.so
+cdylib/           LD_PRELOAD compatibility library
+rtld/             replacement ld.so artifact crate
+rtld/impl/        no_std rtld implementation
+example-dylib/    example shared object
+examples/         API and LD_PRELOAD examples
+tests/            integration tests and rtld artifact checks
+```
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+## Contributing
+
+Issues and pull requests are welcome. For GDB/r_debug/link_map related debugging notes, see [TroubleshootingGdb.md](TroubleshootingGdb.md).
+
+<a href="https://github.com/weizhiao/dlopen-rs/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=weizhiao/dlopen-rs" alt="Project Contributors" />
 </a>
 
 ---
