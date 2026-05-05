@@ -1,22 +1,38 @@
-use elf_loader::tls::DefaultTlsResolver;
+use core::ffi::c_void;
+use elf_loader::tls::{DefaultTlsResolver, TlsResolver};
 
-#[cfg(all(feature = "use-syscall", not(feature = "std"), target_arch = "x86_64"))]
+#[cfg(all(feature = "use-syscall", target_arch = "x86_64"))]
 use elf_loader::{
     Result, TlsError,
-    tls::{TlsIndex, TlsInfo, TlsResolver},
+    tls::{TlsIndex, TlsInfo},
 };
 
-#[cfg(all(feature = "use-syscall", not(feature = "std"), target_arch = "x86_64"))]
+#[cfg(all(feature = "use-syscall", target_arch = "x86_64"))]
 pub(crate) type ActiveTlsResolver = RtldTlsResolver;
 
-#[cfg(not(all(feature = "use-syscall", not(feature = "std"), target_arch = "x86_64")))]
+#[cfg(not(all(feature = "use-syscall", target_arch = "x86_64")))]
 pub(crate) type ActiveTlsResolver = DefaultTlsResolver;
 
-#[cfg(all(feature = "use-syscall", not(feature = "std"), target_arch = "x86_64"))]
+pub(crate) extern "C" fn rtld_tls_get_addr(index: *const usize) -> *mut c_void {
+    <ActiveTlsResolver as TlsResolver>::tls_get_addr(index.cast()).cast()
+}
+
+pub(crate) fn rtld_tls_static_info() -> (usize, usize) {
+    #[cfg(all(feature = "use-syscall", target_arch = "x86_64"))]
+    {
+        rtld_static_tls::static_tls_info()
+    }
+    #[cfg(not(all(feature = "use-syscall", target_arch = "x86_64")))]
+    {
+        (0, 1)
+    }
+}
+
+#[cfg(all(feature = "use-syscall", target_arch = "x86_64"))]
 #[derive(Debug)]
 pub(crate) struct RtldTlsResolver;
 
-#[cfg(all(feature = "use-syscall", not(feature = "std"), target_arch = "x86_64"))]
+#[cfg(all(feature = "use-syscall", target_arch = "x86_64"))]
 impl TlsResolver for RtldTlsResolver {
     fn register(tls_info: &TlsInfo) -> Result<usize> {
         <DefaultTlsResolver as TlsResolver>::register(tls_info)
@@ -39,7 +55,7 @@ impl TlsResolver for RtldTlsResolver {
     }
 }
 
-#[cfg(all(feature = "use-syscall", not(feature = "std"), target_arch = "x86_64"))]
+#[cfg(all(feature = "use-syscall", target_arch = "x86_64"))]
 mod rtld_static_tls {
     use alloc::alloc::{alloc_zeroed, handle_alloc_error};
     use core::{alloc::Layout, ptr};
@@ -54,6 +70,7 @@ mod rtld_static_tls {
         _base: *mut u8,
         tp: *mut u8,
         used: usize,
+        max_align: usize,
     }
 
     unsafe impl Send for StaticTlsArea {}
@@ -69,12 +86,17 @@ mod rtld_static_tls {
         let area = static_tls
             .as_mut()
             .expect("rtld static TLS area should be initialized");
+        let align = tls_info
+            .align
+            .max(1)
+            .checked_next_power_of_two()
+            .ok_or(TlsError::StaticResolverUnsupported)?;
 
         let used = align_up(
             area.used
                 .checked_add(tls_info.memsz)
                 .ok_or(TlsError::StaticResolverUnsupported)?,
-            tls_info.align,
+            align,
         )
         .ok_or(TlsError::StaticResolverUnsupported)?;
         if used > STATIC_TLS_ARENA_SIZE {
@@ -93,8 +115,17 @@ mod rtld_static_tls {
         }
 
         area.used = used;
+        area.max_align = area.max_align.max(align);
         let id = <DefaultTlsResolver as TlsResolver>::add_static_tls(tls_info, offset)?;
         Ok((id, offset))
+    }
+
+    pub(super) fn static_tls_info() -> (usize, usize) {
+        let static_tls = STATIC_TLS.lock();
+        static_tls
+            .as_ref()
+            .map(|area| (area.used, area.max_align))
+            .unwrap_or((0, 1))
     }
 
     fn ensure_static_tls_area() -> Result<StaticTlsArea> {
@@ -119,12 +150,12 @@ mod rtld_static_tls {
             _base: base,
             tp,
             used: 0,
+            max_align: 1,
         })
     }
 
     #[inline]
     fn align_up(value: usize, align: usize) -> Option<usize> {
-        let align = align.max(1).next_power_of_two();
         value
             .checked_add(align - 1)
             .map(|value| value & !(align - 1))

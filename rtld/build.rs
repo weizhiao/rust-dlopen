@@ -12,28 +12,31 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", version_script.display());
 
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux")
-        || env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64")
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64")
+        || env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux")
+        || env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("")
     {
         return;
     }
 
-    emit_link_args(&version_script);
+    emit_cdylib_link_args(&version_script);
     create_soname_link(profile_dir());
 }
 
-fn emit_link_args(version_script: &Path) {
+fn emit_cdylib_link_args(version_script: &Path) {
     for arg in [
-        "-nostdlib".to_owned(),
-        "-Wl,-e,_start".to_owned(),
-        format!("-Wl,-soname,{SONAME}"),
-        "-Wl,-Bsymbolic".to_owned(),
-        "-Wl,-z,now".to_owned(),
-        "-Wl,-z,relro".to_owned(),
-        "-Wl,--hash-style=gnu".to_owned(),
-        "-Wl,--allow-multiple-definition".to_owned(),
-        "-Wl,--undefined=_start".to_owned(),
-        format!("-Wl,--version-script={}", version_script.display()),
+        "-e".to_owned(),
+        "_start".to_owned(),
+        format!("-soname={SONAME}"),
+        "-Bsymbolic".to_owned(),
+        "-z".to_owned(),
+        "now".to_owned(),
+        "-z".to_owned(),
+        "relro".to_owned(),
+        "--hash-style=gnu".to_owned(),
+        "--allow-multiple-definition".to_owned(),
+        "--undefined=_start".to_owned(),
+        format!("--version-script={}", version_script.display()),
     ] {
         println!("cargo:rustc-link-arg-cdylib={arg}");
     }
@@ -44,7 +47,7 @@ fn profile_dir() -> PathBuf {
     out_dir
         .ancestors()
         .nth(3)
-        .expect("OUT_DIR should be under target/<profile>/build")
+        .expect("OUT_DIR should be under target/<target>/<profile>/build")
         .to_owned()
 }
 

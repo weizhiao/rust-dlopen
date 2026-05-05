@@ -1,5 +1,8 @@
 use crate::core_impl::{register::addr2dso, types::LinkMap};
-use core::ffi::{c_int, c_void};
+use core::{
+    ffi::{c_int, c_void},
+    ptr::null_mut,
+};
 use elf_loader::elf::ElfProgramType;
 
 #[repr(C)]
@@ -59,7 +62,20 @@ pub unsafe fn dl_find_object(pc: *const c_void, dlfo: *mut c_void) -> c_int {
     0
 }
 
-#[cfg(feature = "host-init")]
+pub fn dl_find_dso_for_object(addr: *const c_void) -> *mut c_void {
+    let Some(dso) = addr2dso(addr as usize) else {
+        return null_mut();
+    };
+
+    dso.inner
+        .user_data()
+        .link_map
+        .as_ref()
+        .map(|link_map| link_map.as_ref() as *const LinkMap as *mut c_void)
+        .unwrap_or(null_mut())
+}
+
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut c_void) -> c_int {
     unsafe { dl_find_object(pc, dlfo) }

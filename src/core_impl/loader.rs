@@ -1,7 +1,6 @@
-use crate::core_impl::{
-    tls::ActiveTlsResolver,
-    types::{ARGC, ARGV, ENVP, ExtraData, LinkMap},
-};
+#[cfg(not(feature = "std"))]
+use crate::core_impl::tls::ActiveTlsResolver;
+use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
 use crate::utils::debug::add_debug_link_map;
 use crate::{OpenFlags, Result, error::find_symbol_error};
 use alloc::{
@@ -19,6 +18,8 @@ use core::{
     ptr::null,
 };
 use elf_loader::loader::LifecycleContext;
+#[cfg(feature = "std")]
+use elf_loader::tls::DefaultTlsResolver as ActiveTlsResolver;
 use elf_loader::{
     Loader,
     elf::{ElfDyn, ElfPhdr, ElfProgramType},

@@ -1,0 +1,28 @@
+[alias]
+check-host = [
+    "check",
+    "--workspace",
+    "--exclude", "rtld-impl",
+]
+check-rtld = [
+    "check",
+    "-Z", "build-std=core,alloc,compiler_builtins",
+    "-p", "rtld-impl",
+    "--target", "x86_64-unknown-linux-none",
+]
+build-rtld = [
+    "build",
+    "-Z", "build-std=core,alloc,compiler_builtins",
+    "-p", "rtld",
+    "--release",
+    "--target", "x86_64-unknown-linux-none",
+]
+
+[target.x86_64-unknown-linux-none]
+rustflags = [
+    "-C", "relocation-model=pic",
+    "-C", "no-redzone=yes",
+    "-C", "codegen-units=1",
+    "-C", "force-unwind-tables=no",
+    "-C", "panic=abort",
+]

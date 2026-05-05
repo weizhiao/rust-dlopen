@@ -2,6 +2,8 @@
 
 use std::{fs, path::PathBuf, process::Command};
 
+const RTLD_TARGET: &str = "x86_64-unknown-linux-none";
+
 fn target_dir() -> PathBuf {
     option_env!("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -9,11 +11,17 @@ fn target_dir() -> PathBuf {
 }
 
 fn rtld_path() -> PathBuf {
-    target_dir().join("release").join("librtld.so")
+    target_dir()
+        .join(RTLD_TARGET)
+        .join("release")
+        .join("librtld.so")
 }
 
 fn rtld_interp_path() -> PathBuf {
-    target_dir().join("release").join("ld-linux-x86-64.so.2")
+    target_dir()
+        .join(RTLD_TARGET)
+        .join("release")
+        .join("ld-linux-x86-64.so.2")
 }
 
 fn has_command(program: &str) -> bool {
@@ -40,7 +48,16 @@ fn command_output(program: &str, args: &[&str]) -> String {
 
 fn build_rtld() -> PathBuf {
     let status = Command::new("cargo")
-        .args(["build", "-p", "rtld", "--release"])
+        .args([
+            "-Z",
+            "build-std=core,alloc,compiler_builtins",
+            "build",
+            "-p",
+            "rtld",
+            "--release",
+            "--target",
+            RTLD_TARGET,
+        ])
         .status()
         .expect("failed to invoke cargo");
     assert!(status.success(), "rtld release build failed");

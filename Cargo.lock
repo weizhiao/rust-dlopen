@@ -318,8 +318,6 @@ dependencies = [
  "bitflags",
  "cfg-if",
  "elf",
- "foldhash",
- "hashbrown 0.16.1",
  "libc",
  "log",
  "spin",

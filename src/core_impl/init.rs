@@ -1,6 +1,6 @@
+use crate::abi::auxv::{AT_BASE, AT_PHDR, AT_PHNUM};
 use crate::api::dl_iterate_phdr::CDlPhdrInfo;
 use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
-use crate::rtld_abi::auxv::{AT_BASE, AT_PHDR, AT_PHNUM};
 use crate::utils::debug::GDBDebug;
 use crate::{
     OpenFlags, Result,

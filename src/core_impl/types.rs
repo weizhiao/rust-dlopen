@@ -2,7 +2,7 @@ use alloc::{boxed::Box, ffi::CString, string::String, vec::Vec};
 use core::ffi::c_char;
 use elf_loader::elf::ElfDyn;
 
-pub(crate) type LinkMap = crate::rtld_abi::debug::LinkMap;
+pub(crate) type LinkMap = crate::abi::debug::LinkMap;
 
 pub(crate) static mut ARGC: usize = 0;
 pub(crate) static mut ARGV: *const *mut c_char = core::ptr::null();

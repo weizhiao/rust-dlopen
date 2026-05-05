@@ -7,13 +7,9 @@ publish = false
 
 [lib]
 name = "rtld_impl"
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib"]
 test = false
 doctest = false
-
-[features]
-default = ["hosted-check"]
-hosted-check = ["dlopen-rs/std"]
 
 [dependencies]
 dlopen-rs = { path = "../..", default-features = false, features = ["use-syscall"] }

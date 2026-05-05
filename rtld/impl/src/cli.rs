@@ -1,6 +1,6 @@
 use core::slice;
 
-use dlopen_rs::rtld_abi::elf::{ElfDynamicTag, ElfProgramType};
+use dlopen_rs::rtld::elf::{ElfDynamicTag, ElfProgramType};
 use syscalls::Sysno;
 
 use crate::runtime::{exit, write_stderr, write_stdout};

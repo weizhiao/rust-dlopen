@@ -1,8 +1,9 @@
+use core::panic::PanicInfo;
 use core::{alloc::Layout, ptr::null_mut};
 
-#[cfg(not(feature = "hosted-check"))]
-use core::panic::PanicInfo;
 use syscalls::Sysno;
+
+pub(crate) const RTLD_FATAL_EXIT_STATUS: usize = 127;
 
 pub(crate) unsafe fn read_usize(ptr: *const usize) -> usize {
     unsafe { core::ptr::read(ptr) }
@@ -32,10 +33,9 @@ pub(crate) fn exit(status: usize) -> ! {
     }
 }
 
-#[cfg(not(feature = "hosted-check"))]
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
-    exit(127)
+    exit(RTLD_FATAL_EXIT_STATUS)
 }
 
 struct RtldAllocator;

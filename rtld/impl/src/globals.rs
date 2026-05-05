@@ -2,7 +2,7 @@ use core::{
     ffi::{c_int, c_void},
     ptr::{addr_of_mut, null, null_mut},
 };
-use dlopen_rs::rtld_abi::debug::{LinkMap, RDebug};
+use dlopen_rs::rtld::debug::{LinkMap, RDebug};
 
 pub(crate) use crate::arch::RTLD_NAME;
 pub(crate) use crate::glibc::RtldGlobalRoAux;

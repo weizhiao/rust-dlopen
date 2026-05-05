@@ -2,7 +2,7 @@ cfg_if::cfg_if! {
     if #[cfg(feature = "use-syscall")] {
         mod linux;
         pub(crate) use linux::*;
-    } else if #[cfg(unix)] {
+    } else if #[cfg(all(unix, feature = "std"))] {
         mod unix;
         pub(crate) use unix::*;
     } else {

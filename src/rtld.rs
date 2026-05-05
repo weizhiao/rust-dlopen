@@ -1,13 +1,14 @@
-use crate::rtld_abi::{
+pub use crate::abi::{auxv, debug, elf};
+
+use crate::abi::{
     auxv::{AT_BASE, AT_ENTRY, AT_EXECFN, AT_NULL, AT_PHDR, AT_PHENT, AT_PHNUM},
-    bootstrap::{BootstrapMode, BootstrapObject, BootstrapState},
     elf::ElfPhdr,
 };
 use crate::{
     OpenFlags, Result,
     api::dlopen::dlopen_mapped_root,
     core_impl::{
-        loader::{LoadedDylib, RuntimeLoader, new_loader},
+        loader::{ElfDylib, LoadedDylib, RuntimeLoader, new_loader},
         register::{MANAGER, register_loaded},
         types::{ARGC, ARGV, ENVP},
     },
@@ -17,14 +18,92 @@ use alloc::string::String;
 use core::ffi::{CStr, c_char};
 use elf_loader::image::RawExec;
 
+use self::bootstrap::{BootstrapMode, BootstrapObject, BootstrapState};
+
 const RTLD_NAME: &str = "ld-linux-x86-64.so.2";
 
-/// Initializes the runtime loader from the kernel/bootstrap supplied objects.
+/// Runs the replacement rtld stage-1 startup path.
 ///
-/// This is the stage-1 path for the replacement interpreter: stage-0 has only
-/// fixed the interpreter's own relative relocations; everything else should go
-/// through the normal `elf_loader` relocation pipeline.
-pub(crate) unsafe fn prepare_kernel_mapped_main(state: &BootstrapState) -> Result<usize> {
+/// # Safety
+///
+/// `state` must describe live mapped objects that remain mapped while stage-1
+/// performs relocation and registration.
+pub unsafe fn stage1(state: &BootstrapState) -> Result<usize> {
+    if state.mode == BootstrapMode::DirectExec {
+        return unsafe { prepare_direct_exec(state) };
+    }
+
+    unsafe { prepare_kernel_mapped_main(state) }
+}
+
+pub extern "C" fn tls_get_addr(index: *const usize) -> *mut core::ffi::c_void {
+    crate::core_impl::tls::rtld_tls_get_addr(index)
+}
+
+pub fn tls_static_info() -> (usize, usize) {
+    crate::core_impl::tls::rtld_tls_static_info()
+}
+
+pub mod bootstrap {
+    use crate::abi::elf::ElfPhdr;
+    use core::ffi::c_void;
+
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub enum BootstrapMode {
+        KernelMappedMain,
+        DirectExec,
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct BootstrapObject {
+        pub load_bias: usize,
+        pub dynamic: *mut c_void,
+        pub phdr: *const ElfPhdr,
+        pub phnum: usize,
+        pub entry: usize,
+    }
+
+    impl BootstrapObject {
+        pub const fn zero() -> Self {
+            Self {
+                load_bias: 0,
+                dynamic: core::ptr::null_mut(),
+                phdr: core::ptr::null(),
+                phnum: 0,
+                entry: 0,
+            }
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct BootstrapState {
+        pub argc: usize,
+        pub argv: *const *const u8,
+        pub envp: *const *const u8,
+        pub auxv: *const usize,
+        pub mode: BootstrapMode,
+        pub exec_path: *const u8,
+        pub main: BootstrapObject,
+        pub rtld: BootstrapObject,
+    }
+
+    impl BootstrapState {
+        pub const fn zero() -> Self {
+            Self {
+                argc: 0,
+                argv: core::ptr::null(),
+                envp: core::ptr::null(),
+                auxv: core::ptr::null(),
+                mode: BootstrapMode::KernelMappedMain,
+                exec_path: core::ptr::null(),
+                main: BootstrapObject::zero(),
+                rtld: BootstrapObject::zero(),
+            }
+        }
+    }
+}
+
+unsafe fn prepare_kernel_mapped_main(state: &BootstrapState) -> Result<usize> {
     unsafe {
         ARGC = state.argc;
         ARGV = state.argv as *const *mut c_char;
@@ -54,7 +133,7 @@ pub(crate) unsafe fn prepare_kernel_mapped_main(state: &BootstrapState) -> Resul
     Ok(entry)
 }
 
-pub(crate) unsafe fn prepare_direct_exec(state: &BootstrapState) -> Result<usize> {
+unsafe fn prepare_direct_exec(state: &BootstrapState) -> Result<usize> {
     unsafe {
         ARGC = state.argc;
         ARGV = state.argv as *const *mut c_char;
@@ -109,7 +188,7 @@ unsafe fn load_borrowed(
     loader: &mut RuntimeLoader,
     name: impl Into<String>,
     object: BootstrapObject,
-) -> Result<crate::core_impl::loader::ElfDylib> {
+) -> Result<ElfDylib> {
     if object.phdr.is_null() || object.phnum == 0 {
         return Err(find_lib_error(
             "bootstrap object is missing program headers",
@@ -119,20 +198,6 @@ unsafe fn load_borrowed(
     let phdrs = unsafe { core::slice::from_raw_parts(object.phdr, object.phnum) }.to_vec();
     unsafe { loader.load_mapped_dynamic(name, object.load_bias, phdrs, object.entry) }
         .map_err(Into::into)
-}
-
-/// Runs the stage-1 startup path for the `dlopen-rs` replacement interpreter.
-///
-/// # Safety
-///
-/// `state` must describe live mapped objects that remain mapped for the
-/// duration of relocation.
-pub unsafe fn rtld_stage1(state: &BootstrapState) -> Result<usize> {
-    if state.mode == BootstrapMode::DirectExec {
-        return unsafe { prepare_direct_exec(state) };
-    }
-
-    unsafe { prepare_kernel_mapped_main(state) }
 }
 
 unsafe fn patch_exec_auxv(

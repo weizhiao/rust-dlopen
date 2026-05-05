@@ -2,122 +2,26 @@ use crate::Result;
 use crate::core_impl::types::FileIdentity;
 use alloc::boxed::Box;
 
-#[cfg(feature = "std")]
-mod std_impl {
-    use super::*;
-
-    pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
-        std::fs::read(path)
-            .map(|v| v.into_boxed_slice())
-            .map_err(crate::Error::from)
-    }
-
-    pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
-        use std::io::Read;
-        let mut file = std::fs::File::open(path)?;
-        let mut buf = alloc::vec![0; limit];
-        let n = file.read(&mut buf)?;
-        buf.truncate(n);
-        Ok(buf.into_boxed_slice())
-    }
-
-    pub(crate) fn get_file_inode(path: &str) -> Result<FileIdentity> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::metadata(path)?;
-        Ok(FileIdentity {
-            dev: metadata.dev(),
-            ino: metadata.ino(),
-        })
-    }
+pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
+    std::fs::read(path)
+        .map(|v| v.into_boxed_slice())
+        .map_err(crate::Error::from)
 }
 
-#[cfg(not(feature = "std"))]
-mod no_std_impl {
-    use super::*;
-    use alloc::{format, vec::Vec};
-    use libc::{O_RDONLY, SEEK_END, SEEK_SET, c_char};
-
-    pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
-        read_file_limit(path, usize::MAX)
-    }
-
-    pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
-        let mut path_c = Vec::from(path.as_bytes());
-        path_c.push(0);
-
-        unsafe {
-            let fd = libc::open(path_c.as_ptr() as *const c_char, O_RDONLY);
-            if fd < 0 {
-                return Err(crate::Error::IO(format!("Failed to open file: {path}")));
-            }
-
-            let res = (|| {
-                let size = libc::lseek(fd, 0, SEEK_END);
-                let mut buffer = Vec::new();
-
-                if size > 0 && libc::lseek(fd, 0, SEEK_SET) >= 0 {
-                    let read_size = core::cmp::min(size as usize, limit);
-                    buffer.reserve_exact(read_size);
-                    buffer.set_len(read_size);
-                    let n = libc::read(fd, buffer.as_mut_ptr() as *mut _, read_size);
-                    if n < 0 || n as usize != read_size {
-                        return Err(crate::Error::IO(alloc::string::String::from(
-                            "Failed to read complete file",
-                        )));
-                    }
-                } else {
-                    // Fallback for non-seekable files or files with 0 size (like /proc)
-                    if size == 0 {
-                        let _ = libc::lseek(fd, 0, SEEK_SET);
-                    }
-                    let mut temp = [0u8; 1024];
-                    loop {
-                        let to_read = core::cmp::min(temp.len(), limit - buffer.len());
-                        if to_read == 0 {
-                            break;
-                        }
-                        let n = libc::read(fd, temp.as_mut_ptr() as *mut _, to_read);
-                        if n < 0 {
-                            return Err(crate::Error::IO(alloc::string::String::from(
-                                "Read error",
-                            )));
-                        }
-                        if n == 0 {
-                            break;
-                        }
-                        buffer.extend_from_slice(&temp[..n as usize]);
-                    }
-                }
-                Ok(buffer.into_boxed_slice())
-            })();
-
-            libc::close(fd);
-            res
-        }
-    }
-
-    pub(crate) fn get_file_inode(path: &str) -> Result<FileIdentity> {
-        let mut path_c = Vec::from(path.as_bytes());
-        path_c.push(0);
-
-        unsafe {
-            let mut stat_buf: libc::stat = core::mem::zeroed();
-            let result = libc::stat(path_c.as_ptr() as *const c_char, &mut stat_buf);
-            if result < 0 {
-                return Err(crate::Error::IO(alloc::format!(
-                    "Failed to stat file: {}",
-                    path
-                )));
-            }
-            Ok(FileIdentity {
-                dev: stat_buf.st_dev,
-                ino: stat_buf.st_ino,
-            })
-        }
-    }
+pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = alloc::vec![0; limit];
+    let n = file.read(&mut buf)?;
+    buf.truncate(n);
+    Ok(buf.into_boxed_slice())
 }
 
-#[cfg(not(feature = "std"))]
-pub(crate) use no_std_impl::*;
-#[cfg(feature = "std")]
-pub(crate) use std_impl::*;
+pub(crate) fn get_file_inode(path: &str) -> Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    Ok(FileIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    })
+}

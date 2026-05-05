@@ -2,7 +2,7 @@ use core::{
     ffi::{c_int, c_void},
     ptr::{addr_of, addr_of_mut, null, null_mut},
 };
-use dlopen_rs::rtld_abi::debug::{LinkMap, RDebug};
+use dlopen_rs::rtld::debug::{LinkMap, RDebug};
 
 use crate::arch::{
     DL_NNS, EXEC_PAGESIZE, FPU_DEFAULT, PTHREAD_MUTEX_RECURSIVE_NP, STDERR_FILENO,

@@ -1,9 +1,17 @@
+use crate::{
+    cli::{DirectProgram, handle_direct_invocation},
+    globals::{
+        __libc_enable_secure, __libc_stack_end, _dl_argv, _r_debug, EMPTY_NAME, MAIN_LINK_MAP,
+        RTLD_NAME, RtldGlobalRoAux, publish_rtld_globals, rtld_link_map,
+    },
+    runtime::{RTLD_FATAL_EXIT_STATUS, exit, read_usize, write_stderr},
+};
 use core::{
     ffi::c_void,
     fmt::{self, Write},
     ptr::{addr_of_mut, null, null_mut},
 };
-use dlopen_rs::rtld_abi::{
+use dlopen_rs::rtld::{
     auxv::{
         AT_BASE, AT_CLKTCK, AT_ENTRY, AT_FPUCW, AT_HWCAP, AT_HWCAP2, AT_HWCAP3, AT_HWCAP4,
         AT_MINSIGSTKSZ, AT_NULL, AT_PAGESZ, AT_PHDR, AT_PHENT, AT_PHNUM, AT_PLATFORM, AT_SECURE,
@@ -12,16 +20,7 @@ use dlopen_rs::rtld_abi::{
     bootstrap::{BootstrapMode, BootstrapObject, BootstrapState},
     debug::{LinkMap, RDebug, RT_CONSISTENT},
     elf::{ElfDyn, ElfDynamicTag, ElfHeader, ElfPhdr, ElfProgramType, ElfRelType},
-};
-use dlopen_rs::rtld_stage1;
-
-use crate::{
-    cli::{DirectProgram, handle_direct_invocation},
-    globals::{
-        __libc_enable_secure, __libc_stack_end, _dl_argv, _r_debug, EMPTY_NAME, MAIN_LINK_MAP,
-        RTLD_NAME, RtldGlobalRoAux, publish_rtld_globals, rtld_link_map,
-    },
-    runtime::{exit, read_usize, write_stderr},
+    stage1,
 };
 
 #[derive(Copy, Clone)]
@@ -131,10 +130,10 @@ pub extern "C" fn rtld_bootstrap(stack: *const usize, rtld_dynamic: *const usize
     };
 
     let Some(rtld_dynamic_info) = (unsafe { DynamicInfo::parse(rtld_dynamic) }) else {
-        exit(127);
+        exit(RTLD_FATAL_EXIT_STATUS);
     };
     if !unsafe { relocate_rtld_relative(rtld_dynamic_info, rtld_load_bias) } {
-        exit(127);
+        exit(RTLD_FATAL_EXIT_STATUS);
     }
     unsafe {
         addr_of_mut!(_dl_argv).write(argv);
@@ -159,11 +158,11 @@ pub extern "C" fn rtld_bootstrap(stack: *const usize, rtld_dynamic: *const usize
                 rewritten.exec_path,
             )
         };
-        match unsafe { rtld_stage1(&state) } {
+        match unsafe { stage1(&state) } {
             Ok(entry) => return entry,
             Err(err) => {
                 write_stage1_error(b"rtld: direct exec failed: ", &err);
-                exit(127);
+                exit(RTLD_FATAL_EXIT_STATUS);
             }
         }
     }
@@ -186,7 +185,7 @@ pub extern "C" fn rtld_bootstrap(stack: *const usize, rtld_dynamic: *const usize
         )
     };
 
-    let stage1_error = match unsafe { rtld_stage1(&state) } {
+    let stage1_error = match unsafe { stage1(&state) } {
         Ok(entry) => return entry,
         Err(err) => err,
     };
@@ -201,7 +200,7 @@ pub extern "C" fn rtld_bootstrap(stack: *const usize, rtld_dynamic: *const usize
     }
 
     write_stage1_error(b"rtld: stage-1 failed: ", &stage1_error);
-    exit(127)
+    exit(RTLD_FATAL_EXIT_STATUS)
 }
 
 struct StderrWriter;

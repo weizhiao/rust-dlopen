@@ -1,7 +1,9 @@
+#[cfg(not(feature = "std"))]
+use crate::core_impl::loader::shortname_from_name;
 use crate::{
     OpenFlags, Result,
     core_impl::{
-        loader::{DylibExt, ElfDylib, ElfLibrary, LoadedDylib, new_loader, shortname_from_name},
+        loader::{DylibExt, ElfDylib, ElfLibrary, LoadedDylib, new_loader},
         register::{GlobalMeta, LibraryLookup, MANAGER, Manager, register_pending},
         traits::AsFilename,
         types::ExtraData,
@@ -135,16 +137,15 @@ enum LinkRoot<'bytes> {
         key: String,
         bytes: Option<&'bytes [u8]>,
     },
-    Mapped {
-        key: String,
-        raw: ElfDylib,
-    },
+    #[cfg(not(feature = "std"))]
+    Mapped { key: String, raw: ElfDylib },
 }
 
 impl<'bytes> LinkRoot<'bytes> {
     fn bytes(&self) -> Option<&'bytes [u8]> {
         match self {
             Self::Load { bytes, .. } => *bytes,
+            #[cfg(not(feature = "std"))]
             Self::Mapped { .. } => None,
         }
     }
@@ -746,6 +747,7 @@ fn link_root<'mgr, 'bytes>(
         .planner(relocation_planner);
     let root = match root {
         LinkRoot::Load { key, .. } => linker.load(&mut link_ctx, key)?,
+        #[cfg(not(feature = "std"))]
         LinkRoot::Mapped { key, raw } => linker.load_mapped_root(&mut link_ctx, key, raw)?,
     };
 
@@ -781,6 +783,7 @@ fn dlopen_impl(path: &str, flags: OpenFlags, bytes: Option<&[u8]>) -> Result<Elf
     )
 }
 
+#[cfg(not(feature = "std"))]
 pub(crate) fn dlopen_mapped_root(
     root_request: &str,
     raw: ElfDylib,

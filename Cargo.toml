@@ -38,10 +38,10 @@ features = ["default-hasher"]
 #git = "https://github.com/weizhiao/Relink.git"
 path = "../elf_loader"
 default-features = false
-features = ["log", "full"]
+features = ["log", "tls", "lazy-binding"]
 
 [target.'cfg(unix)'.dependencies]
-libc = { version = "0.2.171", default-features = false }
+libc = { version = "0.2.171", default-features = false, optional = true }
 
 [dependencies]
 bitflags = "2.6.0"
@@ -51,18 +51,13 @@ cfg-if = "1.0.0"
 ctor = { workspace = true, optional = true }
 
 [features]
-default = ["host-init"]
-std = ["spin/std"]
-host-init = ["std", "dep:ctor"]
+default = ["std"]
+std = ["spin/std", "dep:ctor", "dep:libc", "elf_loader/libc"]
 # activate specific versions of symbols for dynamic library loading
 version = ["elf_loader/version"]
 use-syscall = ["elf_loader/use-syscall"]
 
 [profile.release.package.rtld]
-codegen-units = 1
-opt-level = "s"
-
-[profile.release.package.rtld-impl]
 codegen-units = 1
 opt-level = "s"
 

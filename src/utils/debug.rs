@@ -1,5 +1,5 @@
+use crate::abi::debug::{RT_ADD, RT_CONSISTENT, RT_DELETE};
 use crate::core_impl::types::{ExtraData, LinkMap};
-use crate::rtld_abi::debug::{RT_ADD, RT_CONSISTENT, RT_DELETE};
 use spin::Mutex;
 
 use core::{
@@ -7,7 +7,7 @@ use core::{
     ptr::{addr_of_mut, null_mut},
 };
 
-pub(crate) type GDBDebug = crate::rtld_abi::debug::RDebug;
+pub(crate) type GDBDebug = crate::abi::debug::RDebug;
 
 pub(crate) struct CustomDebug {
     pub debug: *mut GDBDebug,
