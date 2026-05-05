@@ -1,4 +1,7 @@
-use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
+use crate::core_impl::{
+    tls::ActiveTlsResolver,
+    types::{ARGC, ARGV, ENVP, ExtraData, LinkMap},
+};
 use crate::utils::debug::add_debug_link_map;
 use crate::{OpenFlags, Result, error::find_symbol_error};
 use alloc::{
@@ -13,19 +16,19 @@ use alloc::{
 use core::{
     ffi::{c_char, c_int},
     fmt::Debug,
+    ptr::null,
 };
 use elf_loader::loader::LifecycleContext;
 use elf_loader::{
     Loader,
     elf::{ElfDyn, ElfPhdr, ElfProgramType},
-    image::{LoadedCore, RawDylib, Symbol},
-    tls::DefaultTlsResolver,
+    image::{LoadedCore, RawDynamic, Symbol},
 };
 
-pub(crate) type ElfDylib = RawDylib<ExtraData>;
+pub(crate) type ElfDylib = RawDynamic<ExtraData>;
 pub(crate) type LoadedDylib = LoadedCore<ExtraData>;
 pub(crate) type RuntimeLoader =
-    Loader<elf_loader::os::DefaultMmap, (), ExtraData, DefaultTlsResolver>;
+    Loader<elf_loader::os::DefaultMmap, (), ExtraData, ActiveTlsResolver>;
 
 /// Searches for a symbol in a list of relocated libraries.
 ///
@@ -43,9 +46,8 @@ pub(crate) fn find_symbol<'lib, T>(
 
 pub(crate) fn new_loader() -> RuntimeLoader {
     Loader::new()
-        .with_default_tls_resolver()
-        .with_context::<ExtraData>()
-        .with_dylib_post_load(|raw| {
+        .with_tls_resolver::<ActiveTlsResolver>()
+        .with_dynamic_initializer::<ExtraData>(|raw| {
             let file_path = raw.name().contains('/').then(|| raw.name().to_owned());
             finalize_raw_dylib(raw, file_path.as_deref());
             Ok(())
@@ -84,6 +86,15 @@ pub(crate) fn finalize_raw_dylib(dylib: &mut ElfDylib, file_path: Option<&str>) 
         .map(|p: &ElfPhdr| (base + p.p_vaddr()) as *mut ElfDyn)
         .unwrap_or(core::ptr::null_mut());
 
+    let phdrs = dylib.phdrs();
+    let phdr = if phdrs.is_empty() {
+        null()
+    } else {
+        phdrs.as_ptr().cast()
+    };
+    let phnum = phdrs.len().min(u16::MAX as usize) as u16;
+    let entry = dylib.entry();
+
     let user_data = dylib.user_data_mut().unwrap();
     user_data.needed_libs = needed_libs;
     let c_name = CString::new(name).unwrap();
@@ -94,7 +105,12 @@ pub(crate) fn finalize_raw_dylib(dylib: &mut ElfDylib, file_path: Option<&str>) 
         l_ld: dynamic_ptr as *mut _,
         l_next: core::ptr::null_mut(),
         l_prev: core::ptr::null_mut(),
+        l_phdr: phdr,
+        l_entry: entry,
+        l_phnum: phnum,
+        ..LinkMap::zero()
     });
+    link_map.l_real = link_map.as_mut() as *mut LinkMap;
 
     unsafe { add_debug_link_map(link_map.as_mut()) };
     user_data.link_map = Some(link_map);
@@ -138,6 +154,17 @@ pub trait DylibExt {
     fn shortname(&self) -> &str;
 }
 
+#[inline]
+pub(crate) fn shortname_from_name(name: &str) -> &str {
+    if name.is_empty() {
+        "main"
+    } else {
+        name.rsplit(|c| c == '/' || c == '\\')
+            .next()
+            .unwrap_or(name)
+    }
+}
+
 impl DylibExt for LoadedDylib {
     #[inline]
     fn needed_libs(&self) -> &[String] {
@@ -146,12 +173,7 @@ impl DylibExt for LoadedDylib {
 
     #[inline]
     fn shortname(&self) -> &str {
-        let name = self.name();
-        if name.is_empty() {
-            "main"
-        } else {
-            self.short_name()
-        }
+        shortname_from_name(self.name())
     }
 }
 

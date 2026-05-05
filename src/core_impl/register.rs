@@ -14,9 +14,10 @@ use alloc::{
 };
 use core::ffi::{c_int, c_void};
 use elf_loader::linker::LinkContext;
-use hashbrown::HashMap;
-use indexmap::IndexMap;
+use hashbrown::{DefaultHashBuilder, HashMap};
 use spin::{Lazy, RwLock};
+
+type IndexMap<K, V> = indexmap::IndexMap<K, V, DefaultHashBuilder>;
 
 #[macro_export]
 macro_rules! lock_write {
@@ -475,6 +476,7 @@ impl Manager {
         Arc::from(scope)
     }
 
+    #[allow(unused)]
     pub(crate) fn rebuild_link_ctx(&mut self) {
         let entries = self
             .link_ctx
@@ -614,8 +616,8 @@ impl Manager {
 /// The global static instance of the library manager, protected by a readers-writer lock.
 pub(crate) static MANAGER: Lazy<RwLock<Manager>> = Lazy::new(|| {
     RwLock::new(Manager {
-        pending: IndexMap::new(),
-        global: IndexMap::new(),
+        pending: IndexMap::with_hasher(DefaultHashBuilder::default()),
+        global: IndexMap::with_hasher(DefaultHashBuilder::default()),
         aliases: HashMap::new(),
         identities: HashMap::new(),
         link_ctx: LinkContext::new(),
@@ -637,7 +639,25 @@ fn normalized_flags(name: &str, mut flags: OpenFlags) -> OpenFlags {
     flags
 }
 
-pub(crate) fn register_pending(lib: LoadedDylib, flags: OpenFlags, manager: &mut Manager) {
+fn libc_compat_aliases(shortname: &str) -> &'static [&'static str] {
+    match shortname {
+        "libc.so.6" => &[
+            "libdl.so.2",
+            "libpthread.so.0",
+            "libutil.so.1",
+            "librt.so.1",
+            "libanl.so.1",
+        ],
+        "ld-linux-x86-64.so.2" => &["ld-linux.so.2"],
+        _ => &[],
+    }
+}
+
+pub(crate) fn register_pending(
+    lib: LoadedDylib,
+    flags: OpenFlags,
+    manager: &mut Manager,
+) -> String {
     let name = lib.name();
     let shortname = lib.shortname().to_owned();
     let flags = normalized_flags(name, flags);
@@ -654,6 +674,11 @@ pub(crate) fn register_pending(lib: LoadedDylib, flags: OpenFlags, manager: &mut
     if let Some(identity) = lib.user_data().file_identity {
         manager.add_identity(identity, &shortname);
     }
+    for alias in libc_compat_aliases(&shortname) {
+        manager.add_alias(&shortname, alias);
+    }
+
+    shortname
 }
 
 /// Registers a relocated library in the global manager.
@@ -676,6 +701,9 @@ pub(crate) fn register_loaded(lib: LoadedDylib, flags: OpenFlags, manager: &mut 
 
     if let Some(identity) = lib.user_data().file_identity {
         manager.add_identity(identity, &shortname);
+    }
+    for alias in libc_compat_aliases(&shortname) {
+        manager.add_alias(&shortname, alias);
     }
     if flags.is_global() || is_main {
         manager.add_global(shortname, lib);

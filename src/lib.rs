@@ -40,21 +40,24 @@
 
 extern crate alloc;
 
-#[cfg(all(feature = "std", feature = "use-syscall"))]
-compile_error!("feature \"std\" and feature \"use-syscall\" cannot be enabled at the same time");
-
 pub mod api;
 mod core_impl;
 mod error;
 mod os;
+pub mod rtld_abi;
 mod utils;
 
 use bitflags::bitflags;
 
 pub use crate::api::dlsym::{dlsym_default, dlsym_next};
 pub use crate::core_impl::loader::ElfLibrary;
+pub use crate::core_impl::rtld::rtld_stage1;
 pub use crate::core_impl::traits::AsFilename;
 pub use crate::error::Error;
+pub use crate::rtld_abi::{
+    bootstrap::{BootstrapObject, BootstrapState},
+    elf::ElfPhdr,
+};
 pub use elf_loader::image::Symbol;
 
 #[cfg(not(any(

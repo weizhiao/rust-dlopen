@@ -50,6 +50,7 @@ fn compile() {
                 .arg("-r")
                 .arg("-p")
                 .arg(name)
+                .env("CARGO_PROFILE_RELEASE_PANIC", "unwind")
                 .arg("--target")
                 .arg(TARGET_TRIPLE.get().unwrap().as_str());
             assert!(

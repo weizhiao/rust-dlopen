@@ -1,7 +1,7 @@
 use crate::{
     OpenFlags, Result,
     core_impl::{
-        loader::{DylibExt, ElfLibrary, LoadedDylib, new_loader},
+        loader::{DylibExt, ElfDylib, ElfLibrary, LoadedDylib, new_loader, shortname_from_name},
         register::{GlobalMeta, LibraryLookup, MANAGER, Manager, register_pending},
         traits::AsFilename,
         types::ExtraData,
@@ -23,11 +23,10 @@ use core::{
     cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
 };
-use elf_loader::image::RawDylib;
 use elf_loader::input::{ElfBinary, ElfFile, ElfReader};
 use elf_loader::linker::{
     DependencyRequest, KeyResolver, LinkContext, Linker, LoadObserver, RelocationInputs,
-    RelocationPlanner, RelocationRequest, ResolvedKey, StagedDylib, VisibleModules,
+    RelocationPlanner, RelocationRequest, ResolvedKey, StagedDynamic, VisibleModules,
 };
 use spin::{Lazy, RwLockWriteGuard};
 
@@ -129,6 +128,26 @@ struct OpenContext<'a> {
 
 struct RelocationPlan {
     relocation_scope: Arc<[LoadedDylib]>,
+}
+
+enum LinkRoot<'bytes> {
+    Load {
+        key: String,
+        bytes: Option<&'bytes [u8]>,
+    },
+    Mapped {
+        key: String,
+        raw: ElfDylib,
+    },
+}
+
+impl<'bytes> LinkRoot<'bytes> {
+    fn bytes(&self) -> Option<&'bytes [u8]> {
+        match self {
+            Self::Load { bytes, .. } => *bytes,
+            Self::Mapped { .. } => None,
+        }
+    }
 }
 
 impl<'a> Drop for OpenContext<'a> {
@@ -337,13 +356,15 @@ impl<'a> OpenContext<'a> {
             .and_then(|lib| self.resolve_found(lib, visible)))
     }
 
-    fn register_pending(&self, key: &str, raw: &RawDylib<ExtraData>) {
+    fn register_pending(&self, key: &str, raw: &ElfDylib) {
         self.with_manager_mut(|manager| {
             let lib = unsafe { LoadedDylib::from_core(raw.core()) };
             let shortname = lib.shortname().to_owned();
-            debug_assert_eq!(
-                shortname, key,
-                "resolved load key must match the staged dylib shortname"
+
+            assert_eq!(
+                key, shortname,
+                "staged dylib key [{}] does not match loaded shortname [{}]",
+                key, shortname
             );
 
             assert!(
@@ -352,7 +373,7 @@ impl<'a> OpenContext<'a> {
                 shortname
             );
 
-            register_pending(lib, self.flags, manager);
+            let shortname = register_pending(lib, self.flags, manager);
             self.record_added_name(shortname);
         });
     }
@@ -425,9 +446,9 @@ impl<'ctx, 'mgr> DlopenVisible<'ctx, 'mgr> {
 }
 
 impl LoadObserver<String, ExtraData> for PendingRegistrationObserver<'_, '_> {
-    fn on_staged_dylib(
+    fn on_staged_dynamic(
         &mut self,
-        event: StagedDylib<'_, String, ExtraData>,
+        event: StagedDynamic<'_, String, ExtraData>,
     ) -> core::result::Result<(), elf_loader::Error> {
         self.ctx.register_pending(event.key(), event.raw());
         Ok(())
@@ -649,13 +670,14 @@ impl<'ctx, 'mgr, 'bytes> KeyResolver<'bytes, String, ExtraData, GlobalMeta>
         &mut self,
         req: &DependencyRequest<'_, String, ExtraData, GlobalMeta>,
     ) -> core::result::Result<Option<ResolvedKey<'bytes, String>>, elf_loader::Error> {
+        let owner_name = req.owner_name();
         let rpath = req
             .rpath()
-            .map(|r| fixup_rpath(req.owner().name(), r))
+            .map(|r| fixup_rpath(owner_name, r))
             .unwrap_or_default();
         let runpath = req
             .runpath()
-            .map(|r| fixup_rpath(req.owner().name(), r))
+            .map(|r| fixup_rpath(owner_name, r))
             .unwrap_or_default();
         let is_visible = |key: &str| req.is_visible(&key.to_owned());
         self.resolve_request(Some(&is_visible), &rpath, &runpath, req.needed(), None)
@@ -706,6 +728,36 @@ impl RelocationPlanner<String, ExtraData> for DlopenPlanner<'_, '_> {
     }
 }
 
+fn link_root<'mgr, 'bytes>(
+    ctx: OpenContext<'mgr>,
+    root_request: &str,
+    root: LinkRoot<'bytes>,
+) -> Result<ElfLibrary> {
+    let key_resolver = LinkResolver::new(&ctx, root_request, root.bytes());
+    let pending_observer = PendingRegistrationObserver::new(&ctx);
+    let visible_modules = DlopenVisible::new(&ctx);
+    let mut link_ctx = LinkContext::new();
+    let relocation_planner = DlopenPlanner::new(&ctx);
+    let mut linker = Linker::<String, ExtraData>::new()
+        .map_loader(|_| new_loader())
+        .visible_modules(visible_modules)
+        .resolver(key_resolver)
+        .observer(pending_observer)
+        .planner(relocation_planner);
+    let root = match root {
+        LinkRoot::Load { key, .. } => linker.load(&mut link_ctx, key)?,
+        LinkRoot::Mapped { key, raw } => linker.load_mapped_root(&mut link_ctx, key, raw)?,
+    };
+
+    ctx.complete_relocation(&link_ctx);
+
+    drop(linker);
+    drop(link_ctx);
+
+    let deps = ctx.library_scope(root.shortname());
+    Ok(ctx.finish(deps))
+}
+
 fn dlopen_impl(path: &str, flags: OpenFlags, bytes: Option<&[u8]>) -> Result<ElfLibrary> {
     let mut ctx = OpenContext::new(flags);
 
@@ -719,25 +771,32 @@ fn dlopen_impl(path: &str, flags: OpenFlags, bytes: Option<&[u8]>) -> Result<Elf
         return Err(find_lib_error(format!("can not find file: {}", path)));
     }
 
-    let key_resolver = LinkResolver::new(&ctx, path, bytes);
-    let pending_observer = PendingRegistrationObserver::new(&ctx);
-    let visible_modules = DlopenVisible::new(&ctx);
-    let mut link_ctx = LinkContext::new();
-    let relocation_planner = DlopenPlanner::new(&ctx);
-    let mut linker = Linker::<String, ExtraData>::new()
-        .map_loader(|_| new_loader())
-        .visible_modules(visible_modules)
-        .resolver(key_resolver)
-        .observer(pending_observer)
-        .planner(relocation_planner);
-    let root = linker.load(&mut link_ctx, path.to_owned())?;
+    link_root(
+        ctx,
+        path,
+        LinkRoot::Load {
+            key: path.to_owned(),
+            bytes,
+        },
+    )
+}
 
-    ctx.complete_relocation(&link_ctx);
+pub(crate) fn dlopen_mapped_root(
+    root_request: &str,
+    raw: ElfDylib,
+    flags: OpenFlags,
+) -> Result<ElfLibrary> {
+    let root_key = shortname_from_name(raw.name()).to_owned();
+    let ctx = OpenContext::new(flags);
 
-    let deps = ctx.library_scope(root.shortname());
-    drop(linker);
-    drop(link_ctx);
-    Ok(ctx.finish(deps))
+    log::info!(
+        "dlopen: Link mapped root [{}] as [{}] with [{:?}]",
+        root_request,
+        root_key,
+        ctx.flags
+    );
+
+    link_root(ctx, root_request, LinkRoot::Mapped { key: root_key, raw })
 }
 
 static LD_LIBRARY_PATH: Lazy<Box<[ElfPath]>> = Lazy::new(|| {

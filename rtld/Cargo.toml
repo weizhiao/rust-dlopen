@@ -1,0 +1,13 @@
+[package]
+name = "rtld"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.0"
+publish = false
+
+[lib]
+name = "rtld"
+crate-type = ["cdylib"]
+
+[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.dependencies]
+rtld-impl = { path = "impl", default-features = false }

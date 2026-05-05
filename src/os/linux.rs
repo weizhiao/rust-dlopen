@@ -1,44 +1,32 @@
 use crate::core_impl::types::FileIdentity;
-use crate::utils::debug::GDBDebug;
 use crate::{Error, Result};
 use alloc::boxed::Box;
+#[cfg(not(feature = "std"))]
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
 impl From<syscalls::Errno> for Error {
     fn from(value: syscalls::Errno) -> Self {
-        Error::IO(value.to_string())
+        #[cfg(feature = "std")]
+        {
+            Error::IO(std::io::Error::from_raw_os_error(value.into_raw()))
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            Error::IO(value.to_string())
+        }
     }
 }
 
-const AT_PHDR: usize = 3;
-const AT_PHNUM: usize = 5;
-const AT_BASE: usize = 7;
-
-pub(crate) unsafe fn get_r_debug() -> *mut GDBDebug {
-    let phdr_addr = get_auxv(AT_PHDR);
-    let phnum = get_auxv(AT_PHNUM);
-    let base = get_auxv(AT_BASE);
-
-    unsafe { crate::os::find_r_debug(phdr_addr, phnum, base) }
-}
-
-fn get_auxv(target_type: usize) -> usize {
-    let Ok(data) = read_file("/proc/self/auxv") else {
-        return 0;
-    };
-    let size = core::mem::size_of::<usize>();
-    for chunk in data.chunks_exact(size * 2) {
-        let type_ = usize::from_ne_bytes(chunk[..size].try_into().unwrap());
-        let val = usize::from_ne_bytes(chunk[size..].try_into().unwrap());
-        if type_ == target_type {
-            return val;
-        }
-        if type_ == 0 {
-            break;
-        }
+fn io_error(message: &'static str) -> Error {
+    #[cfg(feature = "std")]
+    {
+        Error::IO(std::io::Error::new(std::io::ErrorKind::Other, message))
     }
-    0
+    #[cfg(not(feature = "std"))]
+    {
+        Error::IO(alloc::string::String::from(message))
+    }
 }
 
 pub(crate) fn read_file(path: &str) -> Result<Box<[u8]>> {
@@ -98,9 +86,7 @@ pub(crate) fn read_file_limit(path: &str, limit: usize) -> Result<Box<[u8]>> {
                 )?
             };
             if bytes_read != read_size {
-                return Err(Error::IO(alloc::string::String::from(
-                    "Failed to read complete file",
-                )));
+                return Err(io_error("Failed to read complete file"));
             }
         } else {
             if file_size == 0 {

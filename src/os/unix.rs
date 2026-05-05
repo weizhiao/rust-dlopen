@@ -1,28 +1,6 @@
 use crate::Result;
 use crate::core_impl::types::FileIdentity;
-use crate::utils::debug::GDBDebug;
 use alloc::boxed::Box;
-
-#[cfg(target_os = "linux")]
-mod linux {
-    use super::*;
-    use libc::{AT_BASE, AT_PHDR, AT_PHNUM};
-
-    pub(crate) unsafe fn get_r_debug() -> *mut GDBDebug {
-        let phdr_addr = unsafe { libc::getauxval(AT_PHDR) as usize };
-        let phnum = unsafe { libc::getauxval(AT_PHNUM) as usize };
-        let base = unsafe { libc::getauxval(AT_BASE) as usize };
-
-        unsafe { crate::os::find_r_debug(phdr_addr, phnum, base) }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-mod generic {
-    pub(crate) unsafe fn get_r_debug() -> *mut crate::utils::debug::GDBDebug {
-        core::ptr::null_mut()
-    }
-}
 
 #[cfg(feature = "std")]
 mod std_impl {
@@ -138,11 +116,6 @@ mod no_std_impl {
         }
     }
 }
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) use generic::get_r_debug;
-#[cfg(target_os = "linux")]
-pub(crate) use linux::get_r_debug;
 
 #[cfg(not(feature = "std"))]
 pub(crate) use no_std_impl::*;

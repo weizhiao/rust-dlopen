@@ -1,0 +1,20 @@
+[package]
+name = "rtld-impl"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.0"
+publish = false
+
+[lib]
+name = "rtld_impl"
+crate-type = ["rlib", "staticlib"]
+test = false
+doctest = false
+
+[features]
+default = ["hosted-check"]
+hosted-check = ["dlopen-rs/std"]
+
+[dependencies]
+dlopen-rs = { path = "../..", default-features = false, features = ["use-syscall"] }
+syscalls = { version = "0.8.1", default-features = false }

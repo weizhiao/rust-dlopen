@@ -12,8 +12,11 @@ struct DlFindObject {
     dlfo_reserved: [usize; 7],    // 40
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut DlFindObject) -> c_int {
+/// # Safety
+///
+/// `dlfo` must point to writable storage with glibc's `struct dl_find_object`
+/// layout.
+pub unsafe fn dl_find_object(pc: *const c_void, dlfo: *mut c_void) -> c_int {
     let address = pc as usize;
     let dso = if let Some(dso) = addr2dso(address) {
         dso
@@ -30,7 +33,7 @@ extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut DlFindObject) -> c_i
         .map(|p| dso.base() + p.p_vaddr())
         .unwrap_or(0);
 
-    let info = unsafe { &mut *dlfo };
+    let info = unsafe { &mut *dlfo.cast::<DlFindObject>() };
     info.dlfo_flags = 0;
     info.dlfo_map_start = dso.base() as *mut c_void;
     info.dlfo_map_end = (dso.base() + dso.mapped_len()) as *mut c_void;
@@ -54,4 +57,10 @@ extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut DlFindObject) -> c_i
     );
 
     0
+}
+
+#[cfg(feature = "host-init")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut c_void) -> c_int {
+    unsafe { dl_find_object(pc, dlfo) }
 }

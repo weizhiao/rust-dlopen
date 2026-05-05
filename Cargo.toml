@@ -13,7 +13,7 @@ description = "A dynamic linker fully implemented in Rust."
 exclude = [".gitignore", "/example-dylib", "check.sh"]
 
 [workspace]
-members = ["example-dylib", "cdylib"]
+members = ["example-dylib", "cdylib", "rtld", "rtld/impl"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -27,6 +27,7 @@ features = ["rwlock", "lazy", "mutex", "spin_mutex"]
 
 [dependencies.indexmap]
 version = '2.9.0'
+default-features = false
 
 [dependencies.hashbrown]
 version = "0.16.1"
@@ -34,9 +35,10 @@ default-features = false
 features = ["default-hasher"]
 
 [dependencies.elf_loader]
-git = "https://github.com/weizhiao/Relink.git"
+#git = "https://github.com/weizhiao/Relink.git"
+path = "../elf_loader"
 default-features = false
-features = ["log","full"]
+features = ["log", "full"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.171", default-features = false }
@@ -44,16 +46,28 @@ libc = { version = "0.2.171", default-features = false }
 [dependencies]
 bitflags = "2.6.0"
 log = "0.4.22"
-syscalls = "0.8.1"
+syscalls = { version = "0.8.1", default-features = false }
 cfg-if = "1.0.0"
-ctor = { workspace = true }
+ctor = { workspace = true, optional = true }
 
 [features]
-default = ["std"]
+default = ["host-init"]
 std = ["spin/std"]
+host-init = ["std", "dep:ctor"]
 # activate specific versions of symbols for dynamic library loading
 version = ["elf_loader/version"]
 use-syscall = ["elf_loader/use-syscall"]
+
+[profile.release.package.rtld]
+codegen-units = 1
+opt-level = "s"
+
+[profile.release.package.rtld-impl]
+codegen-units = 1
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
 
 [dev-dependencies]
 criterion = "0.8.2"

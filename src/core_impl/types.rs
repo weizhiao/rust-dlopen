@@ -1,6 +1,8 @@
 use alloc::{boxed::Box, ffi::CString, string::String, vec::Vec};
-use core::ffi::{c_char, c_void};
+use core::ffi::c_char;
 use elf_loader::elf::ElfDyn;
+
+pub(crate) type LinkMap = crate::rtld_abi::debug::LinkMap;
 
 pub(crate) static mut ARGC: usize = 0;
 pub(crate) static mut ARGV: *const *mut c_char = core::ptr::null();
@@ -41,35 +43,3 @@ impl core::fmt::Debug for ExtraData {
         d.finish()
     }
 }
-
-impl ExtraData {
-    #[inline]
-    pub fn new() -> Self {
-        Self {
-            c_name: None,
-            link_map: None,
-            needed_libs: Vec::new(),
-            dynamic_table: None,
-            file_identity: None,
-        }
-    }
-}
-
-/// A structure representing a link map entry, matching the layout expected by many debuggers.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct LinkMap {
-    /// Base address of the library.
-    pub l_addr: *mut c_void,
-    /// Absolute path to the library.
-    pub l_name: *const c_char,
-    /// Pointer to the ELF dynamic section.
-    pub l_ld: *mut ElfDyn,
-    /// Next entry in the link map.
-    pub l_next: *mut LinkMap,
-    /// Previous entry in the link map.
-    pub l_prev: *mut LinkMap,
-}
-
-unsafe impl Send for LinkMap {}
-unsafe impl Sync for LinkMap {}

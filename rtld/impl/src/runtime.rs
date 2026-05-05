@@ -1,0 +1,78 @@
+use core::{alloc::Layout, ptr::null_mut};
+
+#[cfg(not(feature = "hosted-check"))]
+use core::panic::PanicInfo;
+use syscalls::Sysno;
+
+pub(crate) unsafe fn read_usize(ptr: *const usize) -> usize {
+    unsafe { core::ptr::read(ptr) }
+}
+
+pub(crate) fn write_stderr(bytes: &[u8]) {
+    write_fd(2, bytes);
+}
+
+pub(crate) fn write_stdout(bytes: &[u8]) {
+    write_fd(1, bytes);
+}
+
+fn write_fd(fd: usize, bytes: &[u8]) {
+    unsafe {
+        let _ = syscalls::syscall3(Sysno::write, fd, bytes.as_ptr() as usize, bytes.len());
+    }
+}
+
+pub(crate) fn exit(status: usize) -> ! {
+    unsafe {
+        let _ = syscalls::syscall1(Sysno::exit_group, status);
+        let _ = syscalls::syscall1(Sysno::exit, status);
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(not(feature = "hosted-check"))]
+#[panic_handler]
+fn panic(_info: &PanicInfo<'_>) -> ! {
+    exit(127)
+}
+
+struct RtldAllocator;
+
+#[global_allocator]
+static ALLOCATOR: RtldAllocator = RtldAllocator;
+
+unsafe impl core::alloc::GlobalAlloc for RtldAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let size = page_rounded_size(layout);
+        const PROT_READ: usize = 0x1;
+        const PROT_WRITE: usize = 0x2;
+        const MAP_PRIVATE: usize = 0x02;
+        const MAP_ANONYMOUS: usize = 0x20;
+        let Ok(ptr) = (unsafe {
+            syscalls::syscall6(
+                Sysno::mmap,
+                0,
+                size,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                usize::MAX,
+                0,
+            )
+        }) else {
+            return null_mut();
+        };
+        ptr as *mut u8
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let size = page_rounded_size(layout);
+        let _ = unsafe { syscalls::syscall2(Sysno::munmap, ptr as usize, size) };
+    }
+}
+
+fn page_rounded_size(layout: Layout) -> usize {
+    let size = layout.size().max(layout.align());
+    (size + 0xfff) & !0xfff
+}

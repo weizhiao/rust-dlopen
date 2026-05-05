@@ -1,23 +1,13 @@
 use crate::core_impl::types::{ExtraData, LinkMap};
+use crate::rtld_abi::debug::{RT_ADD, RT_CONSISTENT, RT_DELETE};
 use spin::Mutex;
 
 use core::{
-    ffi::{CStr, c_int, c_void},
+    ffi::CStr,
     ptr::{addr_of_mut, null_mut},
 };
 
-#[repr(C)]
-pub(crate) struct GDBDebug {
-    pub version: c_int,
-    pub map: *mut LinkMap,
-    pub brk: extern "C" fn(),
-    pub state: c_int,
-    pub ldbase: *mut c_void,
-}
-
-const RT_ADD: c_int = 1;
-const RT_CONSISTENT: c_int = 0;
-const RT_DELETE: c_int = 2;
+pub(crate) type GDBDebug = crate::rtld_abi::debug::RDebug;
 
 pub(crate) struct CustomDebug {
     pub debug: *mut GDBDebug,
@@ -27,13 +17,12 @@ pub(crate) struct CustomDebug {
 unsafe impl Sync for CustomDebug {}
 unsafe impl Send for CustomDebug {}
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _dl_debug_state() {}
+extern "C" fn dlopen_debug_state() {}
 
 static mut INTERNAL_GDB_DEBUG: GDBDebug = GDBDebug {
     version: 1,
     map: null_mut(),
-    brk: _dl_debug_state,
+    brk: Some(dlopen_debug_state),
     state: 0,
     ldbase: null_mut(),
 };
@@ -50,8 +39,17 @@ pub(crate) unsafe fn add_debug_link_map(link_map: *mut LinkMap) {
         return;
     }
     let debug = unsafe { &mut *custom_debug.debug };
+    let owns_namespace = core::ptr::addr_eq(
+        custom_debug.debug,
+        core::ptr::addr_of_mut!(INTERNAL_GDB_DEBUG),
+    );
 
     unsafe {
+        if owns_namespace && (*link_map).l_real.is_null() {
+            (*link_map).l_real = link_map;
+        } else if !owns_namespace {
+            (*link_map).l_real = null_mut();
+        }
         (*link_map).l_prev = tail;
         (*link_map).l_next = null_mut();
     }
@@ -65,9 +63,9 @@ pub(crate) unsafe fn add_debug_link_map(link_map: *mut LinkMap) {
     }
     custom_debug.tail = link_map;
     debug.state = RT_ADD;
-    (debug.brk)();
+    unsafe { call_debug_state(debug) };
     debug.state = RT_CONSISTENT;
-    (debug.brk)();
+    unsafe { call_debug_state(debug) };
     log::trace!("Add debugging information for [{:?}]", unsafe {
         CStr::from_ptr((*link_map).l_name).to_string_lossy()
     });
@@ -90,7 +88,7 @@ impl Drop for ExtraData {
                 }
 
                 debug.state = RT_DELETE;
-                (debug.brk)();
+                call_debug_state(debug);
                 match (debug.map == link_map_ptr, tail == link_map_ptr) {
                     (true, true) => {
                         debug.map = null_mut();
@@ -113,23 +111,14 @@ impl Drop for ExtraData {
                     }
                 }
                 debug.state = RT_CONSISTENT;
-                (debug.brk)();
+                call_debug_state(debug);
             }
         }
     }
 }
 
-#[inline]
-pub(crate) fn init_debug(debug: &mut GDBDebug) {
-    let mut custom = DEBUG.lock();
-    custom.debug = debug;
-    let mut cur = debug.map;
-    if !cur.is_null() {
-        unsafe {
-            while !(*cur).l_next.is_null() {
-                cur = (*cur).l_next;
-            }
-        }
+unsafe fn call_debug_state(debug: &GDBDebug) {
+    if let Some(brk) = debug.brk {
+        brk();
     }
-    custom.tail = cur;
 }

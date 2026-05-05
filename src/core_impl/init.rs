@@ -1,6 +1,6 @@
 use crate::api::dl_iterate_phdr::CDlPhdrInfo;
 use crate::core_impl::types::{ARGC, ARGV, ENVP, ExtraData, LinkMap};
-use crate::os::get_r_debug;
+use crate::rtld_abi::auxv::{AT_BASE, AT_PHDR, AT_PHNUM};
 use crate::utils::debug::GDBDebug;
 use crate::{
     OpenFlags, Result,
@@ -14,18 +14,11 @@ use core::{
     ptr::{NonNull, null_mut},
     sync::atomic::{AtomicBool, Ordering},
 };
-use elf_loader::elf::abi::{
-    DT_FINI, DT_FINI_ARRAY, DT_GNU_HASH, DT_GNU_LIBLIST, DT_HASH, DT_INIT, DT_INIT_ARRAY,
-    DT_JMPREL, DT_NULL, DT_PLTGOT, DT_REL, DT_RELA, DT_RELACOUNT, DT_STRTAB, DT_SYMTAB, DT_VERDEF,
-    DT_VERNEED, DT_VERSYM,
-};
 use elf_loader::{
-    elf::{ElfDyn, ElfHeader, ElfPhdr, ElfProgramType},
+    elf::{ElfDyn, ElfDynamicTag, ElfHeader, ElfPhdr, ElfProgramType},
     tls::DefaultTlsResolver,
 };
 use spin::Once;
-
-const DT_RELR: i64 = 36;
 
 #[inline]
 fn get_debug_struct() -> Option<&'static mut GDBDebug> {
@@ -41,35 +34,155 @@ fn get_debug_struct() -> Option<&'static mut GDBDebug> {
 /// A list of dynamic tags that contain absolute addresses that need to be recovered.
 /// These addresses are often modified by the dynamic linker (like glibc) to be absolute,
 /// but we need them to be relative to the base address for our own loader.
-const DT_ADDR_TAGS: &[i64] = &[
-    DT_PLTGOT as i64,
-    DT_HASH as i64,
-    DT_STRTAB as i64,
-    DT_SYMTAB as i64,
-    DT_RELA as i64,
-    DT_INIT as i64,
-    DT_FINI as i64,
-    DT_REL as i64,
-    DT_JMPREL as i64,
-    DT_INIT_ARRAY as i64,
-    DT_FINI_ARRAY as i64,
-    DT_RELR,
-    DT_GNU_HASH as i64,
-    DT_GNU_LIBLIST as i64,
-    DT_RELACOUNT as i64,
-    DT_VERSYM as i64,
-    DT_VERDEF as i64,
-    DT_VERNEED as i64,
+const DT_ADDR_TAGS: &[ElfDynamicTag] = &[
+    ElfDynamicTag::PLTGOT,
+    ElfDynamicTag::HASH,
+    ElfDynamicTag::STRTAB,
+    ElfDynamicTag::SYMTAB,
+    ElfDynamicTag::RELA,
+    ElfDynamicTag::INIT,
+    ElfDynamicTag::FINI,
+    ElfDynamicTag::REL,
+    ElfDynamicTag::JMPREL,
+    ElfDynamicTag::INIT_ARRAY,
+    ElfDynamicTag::FINI_ARRAY,
+    ElfDynamicTag::RELR,
+    ElfDynamicTag::GNU_HASH,
+    ElfDynamicTag::GNU_LIBLIST,
+    ElfDynamicTag::RELACOUNT,
+    ElfDynamicTag::VERSYM,
+    ElfDynamicTag::VERDEF,
+    ElfDynamicTag::VERNEED,
 ];
 
 static ONCE: Once = Once::new();
 static IS_MUSL: AtomicBool = AtomicBool::new(false);
 
+unsafe fn get_r_debug() -> *mut GDBDebug {
+    let phdr_addr = get_auxv(AT_PHDR);
+    let phnum = get_auxv(AT_PHNUM);
+    let base = get_auxv(AT_BASE);
+
+    unsafe { find_r_debug(phdr_addr, phnum, base) }
+}
+
+#[cfg(target_os = "linux")]
+fn get_auxv(target_type: usize) -> usize {
+    let Ok(data) = crate::os::read_file("/proc/self/auxv") else {
+        return 0;
+    };
+    let size = core::mem::size_of::<usize>();
+    for chunk in data.chunks_exact(size * 2) {
+        let type_ = usize::from_ne_bytes(chunk[..size].try_into().unwrap());
+        let val = usize::from_ne_bytes(chunk[size..].try_into().unwrap());
+        if type_ == target_type {
+            return val;
+        }
+        if type_ == 0 {
+            break;
+        }
+    }
+    0
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_auxv(_target_type: usize) -> usize {
+    0
+}
+
+unsafe fn find_r_debug(phdr_addr: usize, phnum: usize, interpreter_base: usize) -> *mut GDBDebug {
+    if phdr_addr == 0 || phnum == 0 {
+        return core::ptr::null_mut();
+    }
+
+    let phdrs = unsafe { core::slice::from_raw_parts(phdr_addr as *const ElfPhdr, phnum) };
+
+    let mut load_bias = None;
+    let mut dynamic_phdr = None;
+    for phdr in phdrs {
+        if phdr.program_type() == ElfProgramType::PHDR {
+            load_bias = Some(phdr_addr.wrapping_sub(phdr.p_vaddr()));
+        } else if phdr.program_type() == ElfProgramType::DYNAMIC {
+            dynamic_phdr = Some(phdr);
+        }
+    }
+
+    if load_bias.is_none() {
+        for phdr in phdrs {
+            if phdr.program_type() == ElfProgramType::LOAD && phdr.p_offset() == 0 {
+                let linked_phdr_addr = phdr.p_vaddr() + 64;
+                load_bias = Some(phdr_addr.wrapping_sub(linked_phdr_addr));
+                break;
+            }
+        }
+    }
+
+    if let (Some(bias), Some(phdr)) = (load_bias, dynamic_phdr) {
+        let ptr =
+            unsafe { find_debug_in_dynamic((bias.wrapping_add(phdr.p_vaddr())) as *const ElfDyn) };
+        if !ptr.is_null() {
+            return ptr;
+        }
+    }
+
+    if interpreter_base != 0 {
+        let ehdr = unsafe { &*(interpreter_base as *const ElfHeader) };
+        let phdrs = unsafe {
+            core::slice::from_raw_parts(
+                (interpreter_base + ehdr.e_phoff()) as *const ElfPhdr,
+                ehdr.e_phnum(),
+            )
+        };
+        if let Some(phdr) = phdrs
+            .iter()
+            .find(|p| p.program_type() == ElfProgramType::DYNAMIC)
+        {
+            let ptr = unsafe {
+                find_debug_in_dynamic(
+                    (interpreter_base.wrapping_add(phdr.p_vaddr())) as *const ElfDyn,
+                )
+            };
+            if !ptr.is_null() {
+                return ptr;
+            }
+        }
+    }
+
+    core::ptr::null_mut()
+}
+
+unsafe fn find_debug_in_dynamic(mut dynamic: *const ElfDyn) -> *mut GDBDebug {
+    while !dynamic.is_null() && unsafe { (*dynamic).tag() } != ElfDynamicTag::NULL {
+        if unsafe { (*dynamic).tag() } == ElfDynamicTag::DEBUG {
+            let ptr = unsafe { (*dynamic).value() as *mut GDBDebug };
+            if !ptr.is_null() && unsafe { (*ptr).version } != 0 {
+                return ptr;
+            }
+        }
+        dynamic = unsafe { dynamic.add(1) };
+    }
+    core::ptr::null_mut()
+}
+
+fn init_host_debug(debug: &mut GDBDebug) {
+    let mut custom = crate::utils::debug::DEBUG.lock();
+    custom.debug = debug;
+    let mut cur = debug.map;
+    if !cur.is_null() {
+        unsafe {
+            while !(*cur).l_next.is_null() {
+                cur = (*cur).l_next;
+            }
+        }
+    }
+    custom.tail = cur;
+}
+
 /// Recovers the dynamic table by making absolute addresses relative to the base address.
 /// This is necessary because some dynamic linkers (like glibc) modify the dynamic table in place.
 unsafe fn recover_dynamic_table(dynamic_ptr: *const ElfDyn, base: usize) -> Vec<ElfDyn> {
     let mut count = 0;
-    while unsafe { (*dynamic_ptr.add(count)).tag().raw() } != DT_NULL {
+    while unsafe { (*dynamic_ptr.add(count)).tag() } != ElfDynamicTag::NULL {
         count += 1;
     }
     let mut table = (0..=count) // include DT_NULL
@@ -80,7 +193,7 @@ unsafe fn recover_dynamic_table(dynamic_ptr: *const ElfDyn, base: usize) -> Vec<
         .collect::<Vec<_>>();
 
     for entry in table.iter_mut() {
-        if DT_ADDR_TAGS.contains(&entry.tag().raw()) && entry.value() > base {
+        if DT_ADDR_TAGS.contains(&entry.tag()) && entry.value() > base {
             let old = entry.value();
             entry.set_value(entry.value() - base);
             log::trace!(
@@ -113,7 +226,7 @@ unsafe fn from_raw(
         return Ok(None);
     }
 
-    let mut user_data = ExtraData::new();
+    let mut user_data = ExtraData::default();
     let name_str = name.to_string_lossy().into_owned();
     user_data.c_name = Some(name);
 
@@ -127,9 +240,11 @@ unsafe fn from_raw(
             l_name: null_mut(),
             l_next: null_mut(),
             l_prev: null_mut(),
+            ..LinkMap::zero()
         }
     });
 
+    link_map.l_real = link_map.as_mut() as *mut LinkMap;
     link_map.l_name = user_data.c_name.as_ref().unwrap().as_ptr();
     link_map.l_next = null_mut();
     link_map.l_prev = null_mut();
@@ -158,6 +273,16 @@ unsafe fn from_raw(
     // Filter out PT_TLS if we don't have tls_data (e.g. from host dl_iterate_phdr with null dlpi_tls_data)
     if extra.as_ref().map_or(true, |e| e.1.is_none()) {
         use_phdrs.retain(|p| p.program_type() != ElfProgramType::TLS);
+    }
+
+    if let Some(link_map) = user_data.link_map.as_mut() {
+        link_map.l_phdr = if use_phdrs.is_empty() {
+            core::ptr::null()
+        } else {
+            use_phdrs.as_ptr().cast()
+        };
+        link_map.l_entry = unsafe { (&*(base as *const ElfHeader)).e_entry() }.wrapping_add(base);
+        link_map.l_phnum = use_phdrs.len().min(u16::MAX as usize) as u16;
     }
 
     len = (len + 0xfff) & !0xfff; // align to page size
@@ -302,7 +427,7 @@ fn iterate_phdr(start: *mut LinkMap, mut f: impl FnMut(IterPhdr)) {
                 from_raw(
                     name.to_owned(),
                     cur_map.l_addr as _,
-                    cur_map.l_ld,
+                    cur_map.l_ld as *const ElfDyn,
                     None,
                     cur_map as *const _ as *mut _,
                 )
@@ -376,7 +501,7 @@ fn init() {
     log::info!("init: starting initialization");
     ONCE.call_once(|| {
         if let Some(debug) = get_debug_struct() {
-            crate::utils::debug::init_debug(debug);
+            init_host_debug(debug);
             iterate_phdr(debug.map, |iter| {
                 iter(Some(callback), null_mut());
             });
