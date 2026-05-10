@@ -2,7 +2,7 @@ use crate::{
     cli::{DirectProgram, handle_direct_invocation},
     globals::{
         __libc_enable_secure, __libc_stack_end, _dl_argv, _r_debug, EMPTY_NAME, MAIN_LINK_MAP,
-        RTLD_NAME, RtldGlobalRoAux, publish_rtld_globals, rtld_link_map,
+        RTLD_NAME, RtldGlobalRoAux, publish_rtld_globals, publish_tls_static_info, rtld_link_map,
     },
     runtime::{RTLD_FATAL_EXIT_STATUS, exit, read_usize, write_stderr},
 };
@@ -19,7 +19,10 @@ use dlopen_rs::rtld::{
     },
     bootstrap::{BootstrapMode, BootstrapObject, BootstrapState},
     debug::{LinkMap, RDebug, RT_CONSISTENT},
-    elf::{ElfDyn, ElfDynamicTag, ElfHeader, ElfPhdr, ElfProgramType, ElfRelType},
+    elf::{
+        ElfDyn, ElfDynamicTag, ElfHeader, ElfPhdr, ElfProgramType, ElfRelType, NativeArch,
+        RelocationArch,
+    },
     register_tls_backend, stage1,
 };
 
@@ -160,7 +163,7 @@ pub extern "C" fn rtld_bootstrap(stack: *const usize, rtld_dynamic: *const usize
             )
         };
         match unsafe { stage1(&state) } {
-            Ok(entry) => return entry,
+            Ok(entry) => return finish_stage1(entry),
             Err(err) => {
                 write_stage1_error(b"rtld: direct exec failed: ", &err);
                 exit(RTLD_FATAL_EXIT_STATUS);
@@ -187,7 +190,7 @@ pub extern "C" fn rtld_bootstrap(stack: *const usize, rtld_dynamic: *const usize
     };
 
     let stage1_error = match unsafe { stage1(&state) } {
-        Ok(entry) => return entry,
+        Ok(entry) => return finish_stage1(entry),
         Err(err) => err,
     };
 
@@ -217,6 +220,12 @@ fn write_stage1_error(prefix: &[u8], err: &dlopen_rs::Error) {
     write_stderr(prefix);
     let _ = write!(StderrWriter, "{err}");
     write_stderr(b"\n");
+}
+
+fn finish_stage1(entry: usize) -> usize {
+    let (size, align) = dlopen_rs::rtld::tls_static_info();
+    unsafe { publish_tls_static_info(size, align) };
+    entry
 }
 
 struct RewrittenStack {
@@ -475,8 +484,8 @@ unsafe fn apply_relocations(table: RelocationTable, load_bias: usize) -> bool {
     };
     for rel in relocations {
         match rel.r_type() {
-            relocation_type if relocation_type.is_none() => {}
-            relocation_type if relocation_type.is_relative() => {
+            relocation_type if relocation_type == NativeArch::NONE => {}
+            relocation_type if relocation_type == NativeArch::RELATIVE => {
                 let dst = load_bias.wrapping_add(rel.r_offset()) as *mut usize;
                 let addend = rel.r_addend(load_bias);
                 unsafe { dst.write(add_signed(load_bias, addend)) };

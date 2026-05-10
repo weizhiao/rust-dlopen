@@ -14,7 +14,7 @@ use crate::{
     error::find_lib_error,
 };
 use alloc::string::String;
-use core::ffi::{CStr, c_char};
+use core::ffi::{CStr, c_char, c_void};
 use elf_loader::image::RawExec;
 
 use self::bootstrap::{BootstrapMode, BootstrapObject, BootstrapState};
@@ -42,7 +42,7 @@ pub fn register_tls_backend(backend: RtldTlsBackend) {
     tls::register_backend(backend);
 }
 
-pub extern "C" fn tls_get_addr(index: *const usize) -> *mut core::ffi::c_void {
+pub extern "C" fn tls_get_addr(index: *const usize) -> *mut c_void {
     tls::get_addr(index)
 }
 
@@ -50,8 +50,23 @@ pub fn tls_static_info() -> (usize, usize) {
     tls::static_info()
 }
 
+pub unsafe fn tls_allocate(storage: *mut c_void) -> *mut c_void {
+    unsafe { tls::allocate(storage.cast()).cast() }
+}
+
+pub unsafe fn tls_init(storage: *mut c_void) -> *mut c_void {
+    unsafe { tls::init(storage.cast()).cast() }
+}
+
+pub unsafe fn tls_deallocate(storage: *mut c_void, dealloc_tcb: bool) {
+    unsafe { tls::deallocate(storage.cast(), dealloc_tcb) };
+}
+
 mod tls {
-    use alloc::alloc::{alloc_zeroed, handle_alloc_error};
+    use alloc::{
+        alloc::{alloc_zeroed, dealloc, handle_alloc_error},
+        vec::Vec,
+    };
     use core::{alloc::Layout, ffi::c_void, ptr};
     use elf_loader::{
         Result, TlsError,
@@ -69,6 +84,18 @@ mod tls {
     }
 
     pub(crate) fn static_info() -> (usize, usize) {
+        let Some(backend) = RTLD_TLS_BACKEND.get() else {
+            return static_used_info();
+        };
+        let (used, align) = static_used_info();
+        let align = align.max(backend.tcb_align).max(1);
+        let size = align_up(used, align)
+            .and_then(|used| used.checked_add(backend.tcb_size))
+            .unwrap_or(0);
+        (size, align)
+    }
+
+    fn static_used_info() -> (usize, usize) {
         let static_tls = STATIC_TLS.lock();
         static_tls
             .as_ref()
@@ -78,7 +105,10 @@ mod tls {
 
     #[derive(Clone, Copy)]
     pub struct RtldTlsBackend {
-        pub init_thread_pointer: unsafe extern "C" fn(*mut u8) -> bool,
+        pub init_tcb: unsafe extern "C" fn(*mut u8) -> bool,
+        pub install_thread_pointer: unsafe extern "C" fn(*mut u8) -> bool,
+        pub tcb_size: usize,
+        pub tcb_align: usize,
     }
 
     static RTLD_TLS_BACKEND: Once<RtldTlsBackend> = Once::new();
@@ -113,7 +143,6 @@ mod tls {
     }
 
     struct StaticTlsArea {
-        _base: *mut u8,
         tp: *mut u8,
         used: usize,
         max_align: usize,
@@ -123,6 +152,25 @@ mod tls {
     unsafe impl Sync for StaticTlsArea {}
 
     static STATIC_TLS: Mutex<Option<StaticTlsArea>> = Mutex::new(None);
+
+    #[derive(Clone, Copy)]
+    struct StaticTlsModule {
+        info: TlsInfo,
+        offset: TlsTpOffset,
+    }
+
+    static STATIC_TLS_MODULES: Mutex<Vec<StaticTlsModule>> = Mutex::new(Vec::new());
+
+    struct TlsAllocation {
+        tp: *mut u8,
+        base: *mut u8,
+        layout: Layout,
+    }
+
+    unsafe impl Send for TlsAllocation {}
+    unsafe impl Sync for TlsAllocation {}
+
+    static TLS_ALLOCATIONS: Mutex<Vec<TlsAllocation>> = Mutex::new(Vec::new());
 
     fn register_static_module(tls_info: &TlsInfo) -> Result<(TlsModuleId, TlsTpOffset)> {
         let mut static_tls = STATIC_TLS.lock();
@@ -150,20 +198,26 @@ mod tls {
         }
 
         let offset = TlsTpOffset::new(-(used as isize));
-        let dst = unsafe { area.tp.offset(offset.get()) };
-        unsafe {
-            ptr::copy_nonoverlapping(tls_info.image.as_ptr(), dst, tls_info.filesz);
-            ptr::write_bytes(
-                dst.add(tls_info.filesz),
-                0,
-                tls_info.memsz - tls_info.filesz,
-            );
-        }
+        let module = StaticTlsModule {
+            info: *tls_info,
+            offset,
+        };
+        unsafe { init_static_tls_module(area.tp, module) };
 
         area.used = used;
         area.max_align = area.max_align.max(align);
         let id = <DefaultTlsResolver as TlsResolver>::add_static_tls(tls_info, offset)?;
+        STATIC_TLS_MODULES.lock().push(module);
         Ok((id, offset))
+    }
+
+    pub(crate) unsafe fn refresh_static_tls() {
+        let Some(tp) = STATIC_TLS.lock().as_ref().map(|area| area.tp) else {
+            return;
+        };
+        for module in STATIC_TLS_MODULES.lock().iter().copied() {
+            unsafe { init_static_tls_module(tp, module) };
+        }
     }
 
     fn ensure_static_tls_area() -> Result<StaticTlsArea> {
@@ -175,10 +229,10 @@ mod tls {
         }
 
         let tp = unsafe { base.add(STATIC_TLS_ARENA_SIZE) };
-        init_thread_pointer(tp)?;
+        init_tcb(tp)?;
+        install_thread_pointer(tp)?;
 
         Ok(StaticTlsArea {
-            _base: base,
             tp,
             used: 0,
             max_align: 1,
@@ -192,14 +246,99 @@ mod tls {
             .map(|value| value & !(align - 1))
     }
 
-    fn init_thread_pointer(tp: *mut u8) -> Result<()> {
+    fn init_tcb(tp: *mut u8) -> Result<()> {
         let Some(backend) = RTLD_TLS_BACKEND.get() else {
             return Err(TlsError::StaticResolverUnsupported.into());
         };
-        if !unsafe { (backend.init_thread_pointer)(tp) } {
+        if !unsafe { (backend.init_tcb)(tp) } {
             return Err(TlsError::StaticResolverUnsupported.into());
         }
         Ok(())
+    }
+
+    fn install_thread_pointer(tp: *mut u8) -> Result<()> {
+        let Some(backend) = RTLD_TLS_BACKEND.get() else {
+            return Err(TlsError::StaticResolverUnsupported.into());
+        };
+        if !unsafe { (backend.install_thread_pointer)(tp) } {
+            return Err(TlsError::StaticResolverUnsupported.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) unsafe fn allocate(storage: *mut u8) -> *mut u8 {
+        let storage = if storage.is_null() {
+            let Some(storage) = allocate_storage() else {
+                return ptr::null_mut();
+            };
+            storage
+        } else {
+            storage
+        };
+
+        unsafe { init(storage) }
+    }
+
+    pub(crate) unsafe fn init(storage: *mut u8) -> *mut u8 {
+        if storage.is_null() || init_tcb(storage).is_err() {
+            return ptr::null_mut();
+        }
+
+        for module in STATIC_TLS_MODULES.lock().iter().copied() {
+            unsafe { init_static_tls_module(storage, module) };
+        }
+
+        storage
+    }
+
+    pub(crate) unsafe fn deallocate(storage: *mut u8, dealloc_tcb: bool) {
+        if !dealloc_tcb || storage.is_null() {
+            return;
+        }
+
+        let mut allocations = TLS_ALLOCATIONS.lock();
+        let Some(index) = allocations
+            .iter()
+            .position(|allocation| allocation.tp == storage)
+        else {
+            return;
+        };
+        let allocation = allocations.swap_remove(index);
+        unsafe { dealloc(allocation.base, allocation.layout) };
+    }
+
+    fn allocate_storage() -> Option<*mut u8> {
+        let backend = RTLD_TLS_BACKEND.get()?;
+        let (static_size, static_align) = static_used_info();
+        let align = static_align
+            .max(backend.tcb_align)
+            .max(core::mem::align_of::<usize>())
+            .checked_next_power_of_two()?;
+        let static_size = align_up(static_size, align)?;
+        let total_size = static_size.checked_add(backend.tcb_size)?;
+        let layout = Layout::from_size_align(total_size.max(1), align).ok()?;
+        let base = unsafe { alloc_zeroed(layout) };
+        if base.is_null() {
+            handle_alloc_error(layout);
+        }
+
+        let tp = unsafe { base.add(static_size) };
+        TLS_ALLOCATIONS
+            .lock()
+            .push(TlsAllocation { tp, base, layout });
+        Some(tp)
+    }
+
+    unsafe fn init_static_tls_module(tp: *mut u8, module: StaticTlsModule) {
+        let dst = unsafe { tp.offset(module.offset.get()) };
+        unsafe {
+            ptr::copy_nonoverlapping(module.info.image.as_ptr(), dst, module.info.filesz);
+            ptr::write_bytes(
+                dst.add(module.info.filesz),
+                0,
+                module.info.memsz - module.info.filesz,
+            );
+        }
     }
 }
 
@@ -288,7 +427,10 @@ unsafe fn prepare_kernel_mapped_main(state: &BootstrapState) -> Result<usize> {
             .to_str()
             .unwrap_or("")
     };
-    drop(dlopen_mapped_root(root_request, main, startup_flags)?);
+    let handle = dlopen_mapped_root(root_request, main, startup_flags)?;
+    unsafe { tls::refresh_static_tls() };
+    unsafe { run_glibc_startup_hooks() };
+    drop(handle);
     Ok(entry)
 }
 
@@ -333,7 +475,10 @@ unsafe fn prepare_direct_exec(state: &BootstrapState) -> Result<usize> {
         RawExec::Dynamic(dynamic) => {
             let startup_flags =
                 OpenFlags::RTLD_GLOBAL | OpenFlags::RTLD_NOW | OpenFlags::RTLD_NODELETE;
-            drop(dlopen_mapped_root(exec_path, dynamic, startup_flags)?);
+            let handle = dlopen_mapped_root(exec_path, dynamic, startup_flags)?;
+            unsafe { tls::refresh_static_tls() };
+            unsafe { run_glibc_startup_hooks() };
+            drop(handle);
             Ok(entry)
         }
         RawExec::Static(exec) => {
@@ -357,6 +502,34 @@ unsafe fn load_borrowed(
     let phdrs = unsafe { core::slice::from_raw_parts(object.phdr, object.phnum) }.to_vec();
     unsafe { loader.load_mapped_dynamic(name, object.load_bias, phdrs, object.entry) }
         .map_err(Into::into)
+}
+
+unsafe fn run_glibc_startup_hooks() {
+    unsafe { call_libc_early_init() };
+    unsafe { call_libc_ctype_init() };
+}
+
+unsafe fn call_libc_early_init() {
+    type EarlyInit = unsafe extern "C" fn(bool);
+    let Some(init) = (unsafe { find_loaded_symbol::<EarlyInit>("__libc_early_init") }) else {
+        return;
+    };
+    unsafe { init(true) };
+}
+
+unsafe fn call_libc_ctype_init() {
+    type CtypeInit = unsafe extern "C" fn();
+    let Some(init) = (unsafe { find_loaded_symbol::<CtypeInit>("__ctype_init") }) else {
+        return;
+    };
+    unsafe { init() };
+}
+
+unsafe fn find_loaded_symbol<T: Copy>(name: &str) -> Option<T> {
+    let manager = crate::lock_read!(MANAGER);
+    manager
+        .all_values()
+        .find_map(|lib| unsafe { lib.get::<T>(name).map(|sym| *sym) })
 }
 
 unsafe fn patch_exec_auxv(

@@ -29,6 +29,8 @@ pub mod elf {
         ElfDyn, ElfDynamicTag, ElfHeader, ElfPhdr, ElfProgramType, ElfRel, ElfRelType, ElfRela,
         ElfRelocationType,
     };
+    #[allow(unused_imports)]
+    pub use elf_loader::{arch::NativeArch, relocation::RelocationArch};
 }
 
 pub mod debug {

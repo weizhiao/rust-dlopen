@@ -13,7 +13,7 @@ use alloc::{
     vec::Vec,
 };
 use core::ffi::{c_int, c_void};
-use elf_loader::linker::LinkContext;
+use elf_loader::linker::{KeyId, LinkContext};
 use hashbrown::{DefaultHashBuilder, HashMap};
 use spin::{Lazy, RwLock};
 
@@ -96,7 +96,7 @@ impl Drop for ElfLibrary {
 
 #[derive(Clone)]
 pub(crate) struct PendingDylib {
-    inner: LoadedDylib,
+    inner: Option<LoadedDylib>,
     pub(crate) flags: OpenFlags,
     pub(crate) libnames: Vec<String>,
 }
@@ -105,22 +105,22 @@ unsafe impl Send for PendingDylib {}
 unsafe impl Sync for PendingDylib {}
 
 impl PendingDylib {
-    fn new(inner: LoadedDylib, flags: OpenFlags) -> Self {
+    fn reserved(flags: OpenFlags) -> Self {
         Self {
-            inner,
+            inner: None,
             flags,
             libnames: Vec::new(),
         }
     }
 
     #[inline]
-    fn dylib(&self) -> LoadedDylib {
+    fn dylib(&self) -> Option<LoadedDylib> {
         self.inner.clone()
     }
 
     #[inline]
-    fn dylib_ref(&self) -> &LoadedDylib {
-        &self.inner
+    fn dylib_ref(&self) -> Option<&LoadedDylib> {
+        self.inner.as_ref()
     }
 }
 
@@ -210,14 +210,21 @@ pub(crate) struct Manager {
 }
 
 impl Manager {
+    fn committed_id(&self, key: &str) -> Option<KeyId> {
+        let id = self.link_ctx.key_id(&key.to_owned())?;
+        self.link_ctx.contains(id).then_some(id)
+    }
+
     fn contains_canonical_key(&self, key: &str) -> bool {
-        self.link_ctx.contains_key(key) || self.pending.contains_key(key)
+        self.pending.contains_key(key) || self.committed_id(key).is_some()
     }
 
     fn committed_lookup<'a>(&'a self, key: &str) -> Option<LibraryLookup<'a>> {
-        let (shortname, inner) = self.link_ctx.get_key_value(key)?;
+        let key = key.to_owned();
+        let id = self.committed_id(&key)?;
+        let inner = self.link_ctx.get(id)?;
         Some(LibraryLookup::Relocated {
-            shortname: Cow::Borrowed(shortname),
+            shortname: Cow::Owned(key),
             name: Cow::Borrowed(inner.name()),
         })
     }
@@ -272,7 +279,7 @@ impl Manager {
         log::trace!("Registered [{}] in global manager", name);
     }
 
-    fn add_pending(&mut self, name: String, lib: LoadedDylib, flags: OpenFlags) {
+    fn add_pending_reservation(&mut self, name: String, flags: OpenFlags) {
         debug_assert!(
             !self.contains_canonical_key(&name),
             "Library [{}] is already registered",
@@ -280,10 +287,10 @@ impl Manager {
         );
         let previous = self
             .pending
-            .insert(name.clone(), PendingDylib::new(lib, flags));
+            .insert(name.clone(), PendingDylib::reserved(flags));
         debug_assert!(previous.is_none(), "Library [{}] is already pending", name);
         self.adds += 1;
-        log::trace!("Registered [{}] in global manager", name);
+        log::trace!("Reserved pending library [{}] in global manager", name);
     }
 
     pub(crate) fn add_alias(&mut self, canonical: &str, alias: &str) {
@@ -318,8 +325,13 @@ impl Manager {
         if let Some(lib) = self.pending.get_mut(canonical) {
             lib.libnames.push(alias.to_owned());
         } else {
+            let canonical = canonical.to_owned();
+            let id = self
+                .link_ctx
+                .key_id(&canonical)
+                .expect("Canonical library must be registered before adding aliases");
             self.link_ctx
-                .meta_mut(canonical)
+                .meta_mut(id)
                 .expect("Canonical library must be registered before adding aliases")
                 .libnames
                 .push(alias.to_owned());
@@ -335,10 +347,12 @@ impl Manager {
     pub(crate) fn remove(&mut self, shortname: &str) {
         let removed = if let Some(lib) = self.pending.shift_remove(shortname) {
             Some((false, lib.flags, lib.libnames))
-        } else {
+        } else if let Some(id) = self.committed_id(shortname) {
             self.link_ctx
-                .remove(shortname)
+                .remove(id)
                 .map(|(_, _, meta)| (true, meta.flags, meta.libnames))
+        } else {
+            None
         };
         let Some((was_committed, flags, libnames)) = removed else {
             panic!("Library is not registered");
@@ -372,15 +386,18 @@ impl Manager {
     }
 
     pub(crate) fn flags(&self, name: &str) -> Option<OpenFlags> {
-        if let Some(meta) = self.link_ctx.meta(name) {
+        if let Some(meta) = self
+            .committed_id(name)
+            .and_then(|id| self.link_ctx.meta(id))
+        {
             return Some(meta.flags);
         }
         if let Some(lib) = self.pending.get(name) {
             return Some(lib.flags);
         }
         let canonical = self.aliases.get(name)?;
-        self.link_ctx
-            .meta(canonical)
+        self.committed_id(canonical)
+            .and_then(|id| self.link_ctx.meta(id))
             .map(|meta| meta.flags)
             .or_else(|| self.pending.get(canonical).map(|lib| lib.flags))
     }
@@ -389,8 +406,7 @@ impl Manager {
     pub(crate) fn all_values(&self) -> impl Iterator<Item = LoadedDylib> + '_ {
         self.link_ctx
             .load_order()
-            .iter()
-            .filter_map(|key| self.link_ctx.get(key).cloned())
+            .filter_map(|id| self.link_ctx.get(id).cloned())
     }
 
     #[inline]
@@ -418,9 +434,9 @@ impl Manager {
 
     #[inline]
     pub(crate) fn main_library(&self) -> Option<ElfLibrary> {
-        let key = self.link_ctx.load_order().first()?;
-        let lib = self.link_ctx.get(key)?.clone();
-        let deps = self.library_scope(key)?;
+        let id = self.link_ctx.load_order().next()?;
+        let lib = self.link_ctx.get(id)?.clone();
+        let deps = self.library_scope_by_id(id)?;
         Some(ElfLibrary {
             inner: lib,
             deps: Some(deps),
@@ -481,16 +497,19 @@ impl Manager {
         let entries = self
             .link_ctx
             .load_order()
-            .iter()
-            .map(|key| {
+            .map(|id| {
+                let key = self
+                    .link_ctx
+                    .key(id)
+                    .expect("load_order entries must resolve to interned keys");
                 let module = self
                     .link_ctx
-                    .get(key)
+                    .get(id)
                     .cloned()
                     .expect("load_order entries must resolve to committed modules");
                 let meta = self
                     .link_ctx
-                    .meta(key)
+                    .meta(id)
                     .cloned()
                     .expect("load_order entries must resolve to committed metadata");
                 let direct_deps = self.canonical_direct_deps(&module);
@@ -509,61 +528,100 @@ impl Manager {
     pub(crate) fn merge_link_context(
         &mut self,
         source: &LinkContext<String, ExtraData, GlobalMeta>,
-        keys: impl IntoIterator<Item = String>,
+        committed: impl IntoIterator<Item = KeyId>,
+        flags: OpenFlags,
     ) {
-        for key in keys {
+        for id in committed {
+            let key = source
+                .key(id)
+                .expect("committed id must resolve in source link context")
+                .clone();
             if self.link_ctx.contains_key(&key) {
                 continue;
             }
 
-            let Some(module) = source.get(&key).cloned() else {
+            let Some(module) = source.get(id).cloned() else {
                 continue;
             };
             let direct_deps = source
-                .direct_deps(&key)
+                .direct_deps(id)
                 .unwrap_or(&[])
-                .to_vec()
+                .iter()
+                .map(|dep| {
+                    source
+                        .key(*dep)
+                        .expect("direct dependency id must resolve in source link context")
+                        .clone()
+                })
+                .collect::<Vec<_>>()
                 .into_boxed_slice();
             let pending = self.pending.shift_remove(&key);
+            let was_pending = pending.is_some();
             let meta = pending
-                .as_ref()
                 .map(|lib| GlobalMeta {
                     flags: lib.flags,
-                    libnames: lib.libnames.clone(),
+                    libnames: lib.libnames,
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|| GlobalMeta {
+                    flags: normalized_flags(module.name(), flags),
+                    libnames: Vec::new(),
+                });
             self.link_ctx
                 .insert_with_meta(key.clone(), module.clone(), direct_deps, meta.clone())
                 .expect("load merge must not insert duplicate keys");
+            if !was_pending {
+                self.adds += 1;
+            }
             if let Some(identity) = module.user_data().file_identity {
                 self.add_identity(identity, &key);
             }
+            for alias in libc_compat_aliases(&key) {
+                self.add_alias(&key, alias);
+            }
             if meta.flags.is_global() {
-                self.add_global(key, module);
+                self.add_global(key.clone(), module);
             }
         }
+        debug_assert!(
+            source.load_order().all(|id| source
+                .key(id)
+                .is_some_and(|key| self.link_ctx.contains_key(key))),
+            "all source modules must be present in the global link context"
+        );
     }
 
     pub(crate) fn visible_contains(&self, name: &str) -> bool {
-        self.lookup(name).is_some()
+        self.canonical_name_owned(name)
+            .is_some_and(|canonical| self.link_ctx.contains_key(&canonical))
     }
 
     pub(crate) fn visible_direct_deps(&self, name: &str) -> Option<Box<[String]>> {
         let canonical = self.canonical_name_owned(name)?;
-        if let Some(direct_deps) = self.link_ctx.direct_deps(&canonical) {
-            return Some(direct_deps.to_vec().into_boxed_slice());
+        if let Some(id) = self.committed_id(&canonical) {
+            let direct_deps = self
+                .link_ctx
+                .direct_deps(id)?
+                .iter()
+                .map(|dep| {
+                    self.link_ctx
+                        .key(*dep)
+                        .expect("direct dependency id must resolve in global link context")
+                        .clone()
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            return Some(direct_deps);
         }
 
         let lib = self.pending.get(&canonical)?;
-        Some(self.canonical_direct_deps(lib.dylib_ref()))
+        Some(self.canonical_direct_deps(lib.dylib_ref()?))
     }
 
     pub(crate) fn visible_loaded(&self, name: &str) -> Option<LoadedDylib> {
         let canonical = self.canonical_name_owned(name)?;
-        self.link_ctx
-            .get(&canonical)
-            .cloned()
-            .or_else(|| self.pending.get(&canonical).map(PendingDylib::dylib))
+        self.committed_id(&canonical)
+            .and_then(|id| self.link_ctx.get(id).cloned())
+            .or_else(|| self.pending.get(&canonical).and_then(PendingDylib::dylib))
     }
 
     pub(crate) fn open_existing(&mut self, name: &str, flags: OpenFlags) -> Option<ElfLibrary> {
@@ -573,8 +631,9 @@ impl Manager {
 
     pub(crate) fn get_lib(&mut self, name: &str) -> Option<ElfLibrary> {
         let canonical = self.canonical_name_owned(name)?;
-        let deps = self.library_scope(&canonical)?;
-        let inner = self.link_ctx.get(&canonical).cloned()?;
+        let id = self.committed_id(&canonical)?;
+        let deps = self.library_scope_by_id(id)?;
+        let inner = self.link_ctx.get(id).cloned()?;
         Some(ElfLibrary {
             inner,
             deps: Some(deps),
@@ -582,33 +641,44 @@ impl Manager {
     }
 
     pub(crate) fn promote(&mut self, shortname: &str, flags: OpenFlags) {
+        let key = shortname.to_owned();
+        let id = self.committed_id(&key).expect("Library must be registered");
         let promotable = flags.promotable();
-        let entry = self
-            .link_ctx
-            .meta_mut(shortname)
-            .expect("Library must be registered");
-        if !entry.flags.contains(promotable) {
-            entry.flags |= promotable;
-            if flags.is_global() {
-                let core = self
-                    .link_ctx
-                    .get(shortname)
-                    .cloned()
-                    .expect("Promoted library must be committed");
-                let key = shortname.to_owned();
-                self.add_global(key, core);
+        let add_global = {
+            let entry = self
+                .link_ctx
+                .meta_mut(id)
+                .expect("Library must be registered");
+            if entry.flags.contains(promotable) {
+                false
+            } else {
+                entry.flags |= promotable;
+                flags.is_global()
             }
+        };
+        if add_global {
+            let core = self
+                .link_ctx
+                .get(id)
+                .cloned()
+                .expect("Promoted library must be committed");
+            self.add_global(key, core);
         }
     }
 
     pub(crate) fn library_scope(&self, name: &str) -> Option<Arc<[LoadedDylib]>> {
         let canonical = self.canonical_name_owned(name)?;
-        let deps = self.link_ctx.dependency_scope(&canonical);
+        let id = self.committed_id(&canonical)?;
+        self.library_scope_by_id(id)
+    }
+
+    pub(crate) fn library_scope_by_id(&self, id: KeyId) -> Option<Arc<[LoadedDylib]>> {
+        let deps = self.link_ctx.dependency_modules(id);
         if !deps.is_empty() {
             return Some(deps);
         }
 
-        let entry = self.link_ctx.get(&canonical)?;
+        let entry = self.link_ctx.get(id)?;
         Some(Arc::from(vec![entry.clone()]))
     }
 }
@@ -653,25 +723,25 @@ fn libc_compat_aliases(shortname: &str) -> &'static [&'static str] {
     }
 }
 
-pub(crate) fn register_pending(
-    lib: LoadedDylib,
+pub(crate) fn reserve_pending(
+    shortname: String,
+    full_name: &str,
+    identity: Option<FileIdentity>,
     flags: OpenFlags,
     manager: &mut Manager,
 ) -> String {
-    let name = lib.name();
-    let shortname = lib.shortname().to_owned();
-    let flags = normalized_flags(name, flags);
+    let flags = normalized_flags(full_name, flags);
 
     log::debug!(
-        "Registering pending library: [{}] (full path: [{}]) flags: [{:?}]",
+        "Reserving pending library: [{}] (request: [{}]) flags: [{:?}]",
         shortname,
-        name,
+        full_name,
         flags
     );
 
-    manager.add_pending(shortname.clone(), lib.clone(), flags);
+    manager.add_pending_reservation(shortname.clone(), flags);
 
-    if let Some(identity) = lib.user_data().file_identity {
+    if let Some(identity) = identity {
         manager.add_identity(identity, &shortname);
     }
     for alias in libc_compat_aliases(&shortname) {

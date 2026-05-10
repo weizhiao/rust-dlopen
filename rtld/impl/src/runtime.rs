@@ -70,6 +70,27 @@ unsafe impl core::alloc::GlobalAlloc for RtldAllocator {
         let size = page_rounded_size(layout);
         let _ = unsafe { syscalls::syscall2(Sysno::munmap, ptr as usize, size) };
     }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let Ok(new_layout) = Layout::from_size_align(new_size.max(1), layout.align()) else {
+            return null_mut();
+        };
+        let new_ptr = unsafe { self.alloc(new_layout) };
+        if new_ptr.is_null() {
+            return null_mut();
+        }
+
+        let copy_len = layout.size().min(new_size);
+        let mut offset = 0usize;
+        while offset < copy_len {
+            let byte = unsafe { ptr.add(offset).read_volatile() };
+            unsafe { new_ptr.add(offset).write_volatile(byte) };
+            offset = offset.wrapping_add(1);
+        }
+
+        unsafe { self.dealloc(ptr, layout) };
+        new_ptr
+    }
 }
 
 fn page_rounded_size(layout: Layout) -> usize {

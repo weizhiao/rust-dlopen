@@ -31,16 +31,19 @@ pub unsafe extern "C" fn _dl_find_object(pc: *const c_void, dlfo: *mut c_void) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _dl_allocate_tls(storage: *mut c_void) -> *mut c_void {
-    storage
+    unsafe { dlopen_rs::rtld::tls_allocate(storage) }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _dl_allocate_tls_init(storage: *mut c_void, _result: *mut c_void) -> *mut c_void {
-    storage
+pub extern "C" fn _dl_allocate_tls_init(storage: *mut c_void, _main_thread: bool) -> *mut c_void {
+    unsafe { dlopen_rs::rtld::tls_init(storage) }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _dl_deallocate_tls(_storage: *mut c_void, _dealloc_tcb: bool) {}
+pub extern "C" fn _dl_deallocate_tls(storage: *mut c_void, dealloc_tcb: bool) {
+    unsafe { crate::glibc::deallocate_tcb(storage.cast()) };
+    unsafe { dlopen_rs::rtld::tls_deallocate(storage, dealloc_tcb) };
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _dl_get_tls_static_info(size: *mut usize, align: *mut usize) {

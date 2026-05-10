@@ -1,17 +1,16 @@
+use crate::arch::{
+    DL_NNS, EXEC_PAGESIZE, FPU_DEFAULT, PTHREAD_MUTEX_RECURSIVE_NP, STDERR_FILENO,
+    X86_CPU_FEATURES_SIZE, X86_HWCAP_FLAGS, X86_PLATFORMS,
+};
 use core::{
     ffi::{c_int, c_void},
     ptr::{addr_of, addr_of_mut, null, null_mut},
 };
 use dlopen_rs::rtld::debug::{LinkMap, RDebug};
 
-use crate::arch::{
-    DL_NNS, EXEC_PAGESIZE, FPU_DEFAULT, PTHREAD_MUTEX_RECURSIVE_NP, STDERR_FILENO,
-    X86_CPU_FEATURES_SIZE, X86_HWCAP_FLAGS, X86_PLATFORMS,
-};
-
 mod tls;
 
-pub(crate) use tls::init_initial_thread_control_block;
+pub(crate) use tls::{deallocate_tcb, init_tcb};
 
 const RTLD_GLOBAL_SIZE: usize = 4352;
 const RTLD_GLOBAL_RO_SIZE: usize = 952;
@@ -366,7 +365,7 @@ impl RtldGlobalRo {
             dl_inhibit_rpath: null(),
             dl_origin_path: null(),
             dl_tls_static_size: 0,
-            dl_tls_static_align: 0,
+            dl_tls_static_align: 1,
             dl_tls_static_surplus: 0,
             dl_profile: null(),
             dl_profile_output: null(),
@@ -408,6 +407,13 @@ impl RtldGlobalRo {
         addr_of!(self.dl_x86_cpu_features).cast()
     }
 
+    pub(crate) unsafe fn publish_tls_static_info(&mut self, size: usize, align: usize) {
+        unsafe {
+            addr_of_mut!(self.dl_tls_static_size).write(size);
+            addr_of_mut!(self.dl_tls_static_align).write(align.max(1));
+        }
+    }
+
     pub(crate) unsafe fn publish(
         &mut self,
         initial_searchlist: *mut [*mut LinkMap; 2],
@@ -439,6 +445,7 @@ impl RtldGlobalRo {
             addr_of_mut!(self.dl_hwcap2).write(ro_aux.hwcap2 as u64);
             addr_of_mut!(self.dl_hwcap3).write(ro_aux.hwcap3 as u64);
             addr_of_mut!(self.dl_hwcap4).write(ro_aux.hwcap4 as u64);
+            self.publish_x86_cpu_defaults();
             addr_of_mut!((*initial_searchlist)[0]).write(main);
             addr_of_mut!((*initial_searchlist)[1]).write(rtld);
             addr_of_mut!(self.dl_initial_searchlist).write(RtldScopeElem {
@@ -447,6 +454,47 @@ impl RtldGlobalRo {
                 _padding: 0,
             });
         }
+    }
+
+    unsafe fn publish_x86_cpu_defaults(&mut self) {
+        // glibc 2.39 IFUNC resolvers copy these cached thresholds out of
+        // _rtld_global_ro before libc's early init runs.
+        const DATA_CACHE_SIZE_OFFSET: usize = 0x1e0 - RTLD_GLOBAL_RO_X86_FEATURES_OFFSET;
+        const SHARED_CACHE_SIZE_OFFSET: usize = 0x1e8 - RTLD_GLOBAL_RO_X86_FEATURES_OFFSET;
+        const NON_TEMPORAL_THRESHOLD_OFFSET: usize = 0x1f0 - RTLD_GLOBAL_RO_X86_FEATURES_OFFSET;
+        const REP_MOVSB_STOP_THRESHOLD_OFFSET: usize = 0x1f8 - RTLD_GLOBAL_RO_X86_FEATURES_OFFSET;
+        const REP_MOVSB_THRESHOLD_OFFSET: usize = 0x200 - RTLD_GLOBAL_RO_X86_FEATURES_OFFSET;
+        const AVX_FAST_UNALIGNED_LOAD_THRESHOLD_OFFSET: usize =
+            0x208 - RTLD_GLOBAL_RO_X86_FEATURES_OFFSET;
+
+        const DATA_CACHE_SIZE: usize = 32 * 1024;
+        const SHARED_CACHE_SIZE: usize = 1024 * 1024;
+        const SAFE_MEMCPY_THRESHOLD: usize = 1024 * 1024;
+
+        unsafe {
+            self.write_x86_cpu_usize(DATA_CACHE_SIZE_OFFSET, DATA_CACHE_SIZE);
+            self.write_x86_cpu_usize(SHARED_CACHE_SIZE_OFFSET, SHARED_CACHE_SIZE);
+            self.write_x86_cpu_usize(NON_TEMPORAL_THRESHOLD_OFFSET, SAFE_MEMCPY_THRESHOLD);
+            self.write_x86_cpu_usize(REP_MOVSB_STOP_THRESHOLD_OFFSET, SAFE_MEMCPY_THRESHOLD);
+            self.write_x86_cpu_usize(REP_MOVSB_THRESHOLD_OFFSET, SAFE_MEMCPY_THRESHOLD);
+            self.write_x86_cpu_usize(
+                AVX_FAST_UNALIGNED_LOAD_THRESHOLD_OFFSET,
+                SAFE_MEMCPY_THRESHOLD,
+            );
+        }
+    }
+
+    unsafe fn write_x86_cpu_usize(&mut self, offset: usize, value: usize) {
+        if offset + core::mem::size_of::<usize>() > X86_CPU_FEATURES_SIZE {
+            return;
+        }
+        let ptr = unsafe {
+            addr_of_mut!(self.dl_x86_cpu_features)
+                .cast::<u8>()
+                .add(offset)
+                .cast::<usize>()
+        };
+        unsafe { ptr.write_unaligned(value) };
     }
 }
 
@@ -475,6 +523,8 @@ const _: [(); 24] = [(); core::mem::offset_of!(RtldGlobalRo, dl_pagesize)];
 const _: [(); 96] = [(); core::mem::offset_of!(RtldGlobalRo, dl_hwcap)];
 const _: [(); 112] = [(); core::mem::offset_of!(RtldGlobalRo, dl_x86_cpu_features)];
 const _: [(); 816] = [(); core::mem::offset_of!(RtldGlobalRo, dl_hwcap2)];
+const RTLD_GLOBAL_RO_X86_FEATURES_OFFSET: usize =
+    core::mem::offset_of!(RtldGlobalRo, dl_x86_cpu_features);
 
 unsafe fn init_list(list: *mut RtldList) {
     unsafe {

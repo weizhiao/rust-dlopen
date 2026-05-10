@@ -1,5 +1,7 @@
 #![no_std]
 
+extern crate alloc;
+
 mod arch;
 mod bootstrap;
 mod cli;

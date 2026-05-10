@@ -1,11 +1,13 @@
+mod support;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use dlopen_rs::{ElfLibrary, OpenFlags};
 use libloading::Library;
 
 fn get_symbol(c: &mut Criterion) {
-    let path = "./target/release/libexample.so";
-    let lib1 = ElfLibrary::dlopen(path, OpenFlags::RTLD_LAZY).unwrap();
-    let lib2 = unsafe { Library::new(path).unwrap() };
+    let path = support::example_dylib_path();
+    let lib1 = ElfLibrary::dlopen(path.to_str().unwrap(), OpenFlags::RTLD_LAZY).unwrap();
+    let lib2 = unsafe { Library::new(&path).unwrap() };
     c.bench_function("dlopen-rs:get", |b| {
         b.iter(|| unsafe { lib1.get::<fn(i32, i32) -> i32>("add").unwrap() })
     });

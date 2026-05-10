@@ -61,3 +61,9 @@ pub(crate) unsafe fn publish_rtld_globals(
         ro.publish(addr_of_mut!(INITIAL_SEARCHLIST), main, rtld, ro_aux);
     }
 }
+
+pub(crate) unsafe fn publish_tls_static_info(size: usize, align: usize) {
+    unsafe {
+        (&mut *addr_of_mut!(_rtld_global_ro)).publish_tls_static_info(size, align);
+    }
+}

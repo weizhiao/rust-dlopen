@@ -16,7 +16,7 @@ const FLAG_TYPE_MASK: i32 = 0x00ff;
 const FLAG_LIBC6: i32 = 0x0003;
 
 #[cfg(target_arch = "x86_64")]
-const FLAG_ARCH_CURRENT: i32 = 0x0100;
+const FLAG_ARCH_CURRENT: i32 = 0x0300;
 #[cfg(target_arch = "aarch64")]
 const FLAG_ARCH_CURRENT: i32 = 0x0200;
 #[cfg(target_arch = "riscv64")]
