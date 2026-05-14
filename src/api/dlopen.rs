@@ -24,39 +24,13 @@ use core::{
     cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
 };
-use elf_loader::input::{ElfBinary, ElfFile, ElfReader};
+use elf_loader::image::{ModuleHandle, ModuleScope};
+use elf_loader::input::{ElfBinary, ElfFile, ElfReader, Path as LoaderPath, PathBuf as ElfPath};
 use elf_loader::linker::{
     DependencyRequest, KeyId, KeyResolver, LinkContext, Linker, RelocationInputs,
-    RelocationPlanner, RelocationRequest, ResolvedKey, VisibleModules,
+    RelocationPlanner, RelocationRequest, ResolvedKey, RootRequest, VisibleModules,
 };
 use spin::{Lazy, RwLockWriteGuard};
-
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ElfPath {
-    path: String,
-}
-
-impl ElfPath {
-    pub(crate) fn from_str(path: &str) -> Result<Self> {
-        Ok(ElfPath {
-            path: path.to_owned(),
-        })
-    }
-
-    /// Appends a file name to the path, ensuring a separator is present.
-    fn join(&self, file_name: &str) -> ElfPath {
-        let mut new = self.path.clone();
-        if !new.is_empty() && !new.ends_with('/') {
-            new.push('/');
-        }
-        new.push_str(file_name);
-        ElfPath { path: new }
-    }
-
-    fn as_str(&self) -> &str {
-        &self.path
-    }
-}
 
 fn get_env(name: &str) -> Option<&'static str> {
     unsafe {
@@ -269,11 +243,15 @@ impl<'a> OpenShared<'a> {
         Ok(entry)
     }
 
-    fn prepare_relocation(&self, group_scope: &[LoadedDylib]) -> Arc<[LoadedDylib]> {
+    fn prepare_relocation(&self, group_scope: &ModuleScope) -> ModuleScope {
+        let group_scope = group_scope
+            .iter()
+            .filter_map(|module| module.as_loaded::<ExtraData>().cloned())
+            .collect::<Vec<_>>();
         let relocation_scope =
-            self.with_manager_mut(|manager| manager.relocation_scope(group_scope, self.flags));
+            self.with_manager_mut(|manager| manager.relocation_scope(&group_scope, self.flags));
         drop(self.take_lock());
-        relocation_scope
+        ModuleScope::new(relocation_scope.iter())
     }
 }
 
@@ -404,9 +382,9 @@ impl VisibleModules<String, ExtraData> for DlopenVisible<'_, '_> {
             .with_manager(|manager| manager.visible_direct_deps(key))
     }
 
-    fn loaded(&self, key: &String) -> Option<LoadedDylib> {
+    fn module(&self, key: &String) -> Option<ModuleHandle> {
         self.shared
-            .with_manager(|manager| manager.visible_loaded(key))
+            .with_manager(|manager| manager.visible_loaded(key).map(Into::into))
     }
 }
 
@@ -512,10 +490,7 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
         path: &ElfPath,
         bytes: Option<&'bytes [u8]>,
     ) -> Result<ResolvedKey<'bytes, String>> {
-        let shortname = path
-            .as_str()
-            .rsplit_once('/')
-            .map_or(path.as_str(), |(_, n)| n);
+        let shortname = path.file_name();
         if let Some(module) = self.resolve_existing_by_path(path.as_str(), shortname, visible)? {
             return Ok(module);
         }
@@ -600,39 +575,41 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
         lib_name: &str,
         bytes: Option<&'bytes [u8]>,
     ) -> Result<ResolvedKey<'bytes, String>> {
-        let shortname = lib_name.rsplit_once('/').map_or(lib_name, |(_, name)| name);
+        let shortname = LoaderPath::new(lib_name).file_name();
         if let Some(module) = self.resolve_existing_by_name(shortname, visible) {
             return Ok(module);
         }
 
         if lib_name.contains('/') {
-            let path = ElfPath::from_str(lib_name)?;
+            let path = ElfPath::from(lib_name);
             return self.resolve_candidate_path(visible, rpath, runpath, &path, bytes);
         }
 
         let rpath_dirs = if runpath.is_empty() { rpath } else { &[] };
+        let search_dirs = rpath_dirs
+            .iter()
+            .chain(LD_LIBRARY_PATH.iter())
+            .chain(runpath.iter());
         if let Some(module) = self.resolve_search_paths(
             visible,
             rpath,
             runpath,
-            rpath_dirs
-                .iter()
-                .chain(LD_LIBRARY_PATH.iter())
-                .chain(runpath.iter())
-                .map(|dir| dir.join(lib_name)),
+            search_dirs.map(|dir| dir.join(lib_name)),
             bytes,
         )? {
             return Ok(module);
         }
 
-        let cached_path = LD_CACHE
+        if let Some(cached_path) = LD_CACHE
             .as_ref()
             .and_then(|cache| cache.lookup(lib_name))
-            .and_then(|path| ElfPath::from_str(&path).ok());
-        if let Some(module) =
-            self.resolve_search_paths(visible, rpath, runpath, cached_path, bytes)?
+            .map(ElfPath::from)
         {
-            return Ok(module);
+            match self.resolve_candidate_path(visible, rpath, runpath, &cached_path, bytes) {
+                Ok(module) => return Ok(module),
+                Err(err) if should_continue_library_search(&err) => {}
+                Err(err) => return Err(err),
+            }
         }
 
         if let Some(module) = self.resolve_search_paths(
@@ -655,8 +632,9 @@ impl<'ctx, 'mgr, 'bytes> LinkResolver<'ctx, 'mgr, 'bytes> {
 impl<'ctx, 'mgr, 'bytes> KeyResolver<'bytes, String> for LinkResolver<'ctx, 'mgr, 'bytes> {
     fn load_root(
         &mut self,
-        key: &String,
+        req: &RootRequest<'_, String>,
     ) -> core::result::Result<ResolvedKey<'bytes, String>, elf_loader::Error> {
+        let key = req.key();
         let bytes = if *key == self.root_request {
             self.root_bytes.take()
         } else {
@@ -687,7 +665,7 @@ impl<'ctx, 'mgr, 'bytes> KeyResolver<'bytes, String> for LinkResolver<'ctx, 'mgr
 
 struct DlopenPlanner<'ctx, 'mgr> {
     shared: &'ctx OpenShared<'mgr>,
-    relocation_scope: Option<Arc<[LoadedDylib]>>,
+    relocation_scope: Option<ModuleScope>,
 }
 
 impl<'ctx, 'mgr> DlopenPlanner<'ctx, 'mgr> {
@@ -714,7 +692,7 @@ impl RelocationPlanner<String, ExtraData> for DlopenPlanner<'_, '_> {
             .relocation_scope
             .as_ref()
             .expect("Relocation scope must be initialized");
-        let inputs = RelocationInputs::shared(relocation_scope.clone());
+        let inputs = RelocationInputs::scope(relocation_scope.clone());
         if self.shared.flags.is_now() {
             Ok(inputs.eager())
         } else if self.shared.flags.is_lazy() {
@@ -821,33 +799,33 @@ static LD_LIBRARY_PATH: Lazy<Box<[ElfPath]>> = Lazy::new(|| {
         Box::new([])
     }
 });
-static DEFAULT_PATH: Lazy<Box<[ElfPath]>> = Lazy::new(|| unsafe {
+static DEFAULT_PATH: Lazy<Box<[ElfPath]>> = Lazy::new(|| {
     let mut v = Vec::new();
     push_platform_default_paths(&mut v);
-    v.push(ElfPath::from_str("/lib").unwrap_unchecked());
-    v.push(ElfPath::from_str("/usr/lib").unwrap_unchecked());
-    v.push(ElfPath::from_str("/lib64").unwrap_unchecked());
-    v.push(ElfPath::from_str("/usr/lib64").unwrap_unchecked());
+    v.push(ElfPath::from("/lib"));
+    v.push(ElfPath::from("/usr/lib"));
+    v.push(ElfPath::from("/lib64"));
+    v.push(ElfPath::from("/usr/lib64"));
     v.into_boxed_slice()
 });
 static LD_CACHE: Lazy<Option<LdCache>> = Lazy::new(|| LdCache::new().ok());
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn push_platform_default_paths(paths: &mut Vec<ElfPath>) {
-    paths.push(unsafe { ElfPath::from_str("/lib/x86_64-linux-gnu").unwrap_unchecked() });
-    paths.push(unsafe { ElfPath::from_str("/usr/lib/x86_64-linux-gnu").unwrap_unchecked() });
+fn push_platform_default_paths(paths: &mut Vec<ElfPath>) {
+    paths.push(ElfPath::from("/lib/x86_64-linux-gnu"));
+    paths.push(ElfPath::from("/usr/lib/x86_64-linux-gnu"));
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn push_platform_default_paths(paths: &mut Vec<ElfPath>) {
-    paths.push(unsafe { ElfPath::from_str("/lib/aarch64-linux-gnu").unwrap_unchecked() });
-    paths.push(unsafe { ElfPath::from_str("/usr/lib/aarch64-linux-gnu").unwrap_unchecked() });
+fn push_platform_default_paths(paths: &mut Vec<ElfPath>) {
+    paths.push(ElfPath::from("/lib/aarch64-linux-gnu"));
+    paths.push(ElfPath::from("/usr/lib/aarch64-linux-gnu"));
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn push_platform_default_paths(paths: &mut Vec<ElfPath>) {
-    paths.push(unsafe { ElfPath::from_str("/lib/riscv64-linux-gnu").unwrap_unchecked() });
-    paths.push(unsafe { ElfPath::from_str("/usr/lib/riscv64-linux-gnu").unwrap_unchecked() });
+fn push_platform_default_paths(paths: &mut Vec<ElfPath>) {
+    paths.push(ElfPath::from("/lib/riscv64-linux-gnu"));
+    paths.push(ElfPath::from("/usr/lib/riscv64-linux-gnu"));
 }
 
 #[cfg(not(any(
@@ -855,7 +833,7 @@ unsafe fn push_platform_default_paths(paths: &mut Vec<ElfPath>) {
     target_arch = "aarch64",
     target_arch = "riscv64"
 )))]
-unsafe fn push_platform_default_paths(_paths: &mut Vec<ElfPath>) {}
+fn push_platform_default_paths(_paths: &mut Vec<ElfPath>) {}
 
 #[inline]
 fn fixup_rpath(lib_path: &str, rpath: &str) -> Box<[ElfPath]> {
@@ -881,7 +859,7 @@ fn fixup_rpath(lib_path: &str, rpath: &str) -> Box<[ElfPath]> {
 fn parse_path_list(s: &str) -> Box<[ElfPath]> {
     s.split(':')
         .filter(|str| !str.is_empty())
-        .map(|str| ElfPath::from_str(str).unwrap())
+        .map(ElfPath::from)
         .collect()
 }
 

@@ -314,7 +314,7 @@ checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
 [[package]]
 name = "elf_loader"
 version = "0.14.1"
-source = "git+https://github.com/weizhiao/Relink.git#5a34cc594fb0187dc0cbfad61c06d8f1fae8f46c"
+source = "git+https://github.com/weizhiao/Relink.git#96247220b2949e15567918e4e3139211df8c1c6a"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -610,6 +610,10 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "promotion_dylib"
+version = "0.1.0"
 
 [[package]]
 name = "quote"

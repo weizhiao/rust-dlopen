@@ -10,10 +10,10 @@ keywords = ["dlopen", "elf", "unix", "loader"]
 categories = ["no-std", "os", "embedded"]
 license = "Apache-2.0"
 description = "A dynamic linker fully implemented in Rust."
-exclude = [".gitignore", "/example-dylib", "check.sh"]
+exclude = [".gitignore", "/example-dylib", "/test-dylibs", "check.sh"]
 
 [workspace]
-members = ["example-dylib", "cdylib", "rtld", "rtld/impl"]
+members = ["example-dylib", "test-dylibs/promotion", "cdylib", "rtld", "rtld/impl"]
 resolver = "2"
 
 [workspace.dependencies]

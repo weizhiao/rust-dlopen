@@ -16,7 +16,7 @@ fn lib_path(file_name: &str) -> String {
         .to_string()
 }
 
-const PACKAGE_NAME: [&str; 1] = ["example_dylib"];
+const PACKAGE_NAME: [&str; 2] = ["example_dylib", "promotion_dylib"];
 
 fn compile() {
     static ONCE: ::std::sync::Once = ::std::sync::Once::new();
@@ -61,7 +61,6 @@ fn compile() {
         }
 
         let libexample = lib_path("libexample.so");
-        let _ = std::fs::copy(&libexample, lib_path("libpromotion.so"));
         let _ = std::fs::copy(&libexample, lib_path("libnodelete.so"));
         let _ = std::fs::copy(&libexample, lib_path("libexample_noload.so"));
     });
@@ -125,7 +124,7 @@ fn promotion() {
     assert!(!lib_local.flags().contains(OpenFlags::RTLD_GLOBAL));
 
     // Symbol should NOT be in global scope
-    assert!(dlopen_rs::dlsym_default::<fn(i32, i32) -> i32>("add").is_err());
+    assert!(dlopen_rs::dlsym_default::<fn(i32, i32) -> i32>("promotion_add").is_err());
 
     // 2. Promote to RTLD_GLOBAL
     let lib_promoted =
@@ -133,7 +132,7 @@ fn promotion() {
     assert!(lib_promoted.flags().contains(OpenFlags::RTLD_GLOBAL));
 
     // Symbol SHOULD be in global scope now
-    let add_sym = dlopen_rs::dlsym_default::<fn(i32, i32) -> i32>("add")
+    let add_sym = dlopen_rs::dlsym_default::<fn(i32, i32) -> i32>("promotion_add")
         .expect("Symbol should be available after promotion");
     assert_eq!(add_sym(1, 2), 3);
 }

@@ -15,10 +15,9 @@ use core::{
     fmt::Debug,
     ptr::null,
 };
-use elf_loader::loader::LifecycleContext;
 use elf_loader::{
     Loader,
-    elf::{ElfDyn, ElfPhdr, ElfProgramType},
+    elf::{ElfDyn, ElfPhdr, ElfProgramType, Lifecycle},
     image::{LoadedCore, RawDynamic, Symbol},
 };
 
@@ -54,7 +53,7 @@ pub(crate) fn new_loader() -> RuntimeLoader {
             finalize_raw_dylib(raw, file_path.as_deref());
             Ok(())
         })
-        .with_init(|ctx: &LifecycleContext| {
+        .with_init(|ctx: &Lifecycle| {
             let argc = unsafe { *core::ptr::addr_of!(ARGC) };
             let argv = unsafe { *core::ptr::addr_of!(ARGV) };
             let envp = unsafe { *core::ptr::addr_of!(ENVP) as *const *mut c_char };
